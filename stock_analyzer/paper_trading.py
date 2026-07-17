@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -122,6 +123,19 @@ def run_paper_trading(
     return report_path
 
 
+def generate_monthly_summary(data_dir: Path, month: str) -> Path:
+    paper_dir = data_dir / "paper_trading"
+    paper_dir.mkdir(parents=True, exist_ok=True)
+    history = [item for item in load_history(paper_dir / "account_history.json") if in_month(item, month)]
+    operations = [item for item in load_operations(paper_dir / "operations.jsonl") if in_month(item, month)]
+    strategies = [item for item in load_history(paper_dir / "strategy_history.json") if in_month(item, month)]
+
+    summary_path = paper_dir / f"summary_{month}.md"
+    lines = build_monthly_summary_lines(month, history, operations, strategies)
+    summary_path.write_text("\n".join(lines), encoding="utf-8")
+    return summary_path
+
+
 def load_state(path: Path, initial_capital: float) -> PaperState:
     if not path.exists():
         return PaperState(initial_capital=initial_capital, cash=initial_capital, positions={})
@@ -168,6 +182,164 @@ def load_history(path: Path) -> list[dict[str, Any]]:
     with path.open("r", encoding="utf-8") as fp:
         payload = json.load(fp)
     return payload if isinstance(payload, list) else []
+
+
+def load_operations(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as fp:
+        for line in fp:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                rows.append(payload)
+    return rows
+
+
+def in_month(item: dict[str, Any], month: str) -> bool:
+    return str(item.get("run_date") or "").startswith(f"{month}-")
+
+
+def build_monthly_summary_lines(
+    month: str,
+    history: list[dict[str, Any]],
+    operations: list[dict[str, Any]],
+    strategies: list[dict[str, Any]],
+) -> list[str]:
+    lines = [
+        f"# 模拟投资月度复盘 {month}",
+        "",
+        "说明：这是纸面模拟复盘，不构成真实投资建议。",
+        "",
+    ]
+    if not history:
+        lines.extend(
+            [
+                "## 概览",
+                "",
+                "- 本月没有账户历史记录。请先运行每日模拟盘命令。",
+                "",
+            ]
+        )
+        return lines
+
+    history.sort(key=lambda item: str(item.get("run_date", "")))
+    start_value = infer_start_value(history)
+    end_value = float(history[-1].get("total_value") or 0.0)
+    total_pnl = end_value - start_value
+    total_pnl_pct = total_pnl / start_value * 100 if start_value else 0.0
+    daily_pcts = [float(item.get("daily_pnl_pct") or 0.0) for item in history]
+    win_days = sum(1 for value in daily_pcts if value > 0)
+    loss_days = sum(1 for value in daily_pcts if value < 0)
+    flat_days = len(daily_pcts) - win_days - loss_days
+    max_drawdown = calc_max_drawdown(history, start_value)
+    action_counts = Counter(str(item.get("action") or "UNKNOWN") for item in operations)
+    strategy_counts = Counter(str(item.get("mode") or item.get("strategy_mode") or "unknown") for item in strategies)
+    if not strategy_counts:
+        strategy_counts = Counter(str(item.get("strategy_mode") or "unknown") for item in history)
+
+    lines.extend(
+        [
+            "## 概览",
+            "",
+            f"- 统计交易日：{len(history)} 天",
+            f"- 期初资产：{start_value:.2f}",
+            f"- 期末资产：{end_value:.2f}",
+            f"- 本月收益：{total_pnl:+.2f} ({total_pnl_pct:+.2f}%)",
+            f"- 最大回撤：{max_drawdown:.2f}%",
+            f"- 盈利天数：{win_days}，亏损天数：{loss_days}，持平天数：{flat_days}",
+            "",
+            "## 操作统计",
+            "",
+            f"- 买入次数：{action_counts.get('BUY', 0)}",
+            f"- 卖出次数：{action_counts.get('SELL', 0)}",
+            f"- 跳过次数：{action_counts.get('SKIP', 0)}",
+            f"- 观察次数：{action_counts.get('WATCH', 0)}",
+            "",
+            "## 策略模式",
+            "",
+        ]
+    )
+    for mode, count in strategy_counts.most_common():
+        lines.append(f"- {mode}：{count} 天")
+    lines.extend(["", "## 每日资产", ""])
+    lines.append("| 日期 | 总资产 | 当日收益 | 累计收益 | 持仓数 | 策略 |")
+    lines.append("| --- | ---: | ---: | ---: | ---: | --- |")
+    for item in history:
+        lines.append(
+            f"| {item.get('run_date')} | {float(item.get('total_value') or 0.0):.2f} | "
+            f"{float(item.get('daily_pnl') or 0.0):+.2f} ({float(item.get('daily_pnl_pct') or 0.0):+.2f}%) | "
+            f"{float(item.get('total_pnl') or 0.0):+.2f} ({float(item.get('total_pnl_pct') or 0.0):+.2f}%) | "
+            f"{int(item.get('position_count') or 0)} | {item.get('strategy_mode') or ''} |"
+        )
+
+    lines.extend(["", "## 买卖流水", ""])
+    trade_rows = [item for item in operations if item.get("action") in {"BUY", "SELL"}]
+    if trade_rows:
+        lines.append("| 日期 | 操作 | 代码 | 名称 | 股数 | 价格 | 金额 | 原因 |")
+        lines.append("| --- | --- | --- | --- | ---: | ---: | ---: | --- |")
+        for item in trade_rows:
+            lines.append(
+                f"| {item.get('run_date')} | {item.get('action')} | {item.get('code')} | "
+                f"{item.get('name')} | {int(item.get('shares') or 0)} | "
+                f"{format_optional_float(item.get('price'))} | {float(item.get('amount') or 0.0):.2f} | "
+                f"{item.get('reason') or ''} |"
+            )
+    else:
+        lines.append("- 本月没有实际模拟买入或卖出。")
+
+    lines.extend(["", "## 策略调整历史", ""])
+    if strategies:
+        lines.append("| 日期 | 模式 | 开仓分数 | 单票上限 | 最大持仓 | 止损线 | 原因 |")
+        lines.append("| --- | --- | ---: | ---: | ---: | ---: | --- |")
+        for item in sorted(strategies, key=lambda row: str(row.get("run_date", ""))):
+            lines.append(
+                f"| {item.get('run_date')} | {item.get('mode')} | {float(item.get('buy_score') or 0.0):.0f} | "
+                f"{float(item.get('max_position_value') or 0.0):.2f} | {int(item.get('max_positions') or 0)} | "
+                f"{float(item.get('stop_loss_pct') or 0.0):.0f}% | {item.get('reason') or ''} |"
+            )
+    else:
+        lines.append("- 本月没有策略历史记录。")
+
+    lines.append("")
+    lines.append(f"生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    return lines
+
+
+def infer_start_value(history: list[dict[str, Any]]) -> float:
+    first = history[0]
+    total_value = float(first.get("total_value") or 0.0)
+    daily_pnl = float(first.get("daily_pnl") or 0.0)
+    start_value = total_value - daily_pnl
+    return start_value if start_value > 0 else total_value
+
+
+def calc_max_drawdown(history: list[dict[str, Any]], start_value: float) -> float:
+    peak = start_value
+    max_drawdown = 0.0
+    for item in history:
+        value = float(item.get("total_value") or 0.0)
+        peak = max(peak, value)
+        if peak <= 0:
+            continue
+        drawdown = (peak - value) / peak * 100
+        max_drawdown = max(max_drawdown, drawdown)
+    return max_drawdown
+
+
+def format_optional_float(value: object) -> str:
+    if value is None:
+        return ""
+    try:
+        return f"{float(value):.2f}"
+    except (TypeError, ValueError):
+        return ""
 
 
 def save_strategy(path: Path, run_date: str, strategy: StrategyProfile) -> None:

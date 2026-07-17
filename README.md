@@ -20,6 +20,18 @@ python3 main.py --once --full-scan --news-candidates 120 --news-per-stock 5 --pa
 
 注意：`python3 -m py_compile ...` 只是检查代码语法，不是每天运行模拟盘的命令。
 
+生成某个月的模拟盘复盘：
+
+```bash
+python3 main.py --paper-summary --month 2026-07
+```
+
+如果不写 `--month`，默认生成当前月份复盘：
+
+```bash
+python3 main.py --paper-summary
+```
+
 ```bash
 python3 main.py --once
 ```
@@ -106,6 +118,7 @@ python3 main.py --once --full-scan --news-candidates 120 --news-per-stock 5 --pa
 - 模拟操作流水：`data/paper_trading/operations.jsonl`
 - 当前策略参数：`data/paper_trading/strategy.json`
 - 策略调整历史：`data/paper_trading/strategy_history.json`
+- 月度复盘报告：`data/paper_trading/summary_YYYY-MM.md`
 
 ## 数据源
 

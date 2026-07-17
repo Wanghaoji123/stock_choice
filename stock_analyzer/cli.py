@@ -10,7 +10,7 @@ from .analyzer import build_recommendations
 from .config import Settings
 from .fetchers import EastMoneyClient
 from .models import KLine, NewsItem, StockQuote
-from .paper_trading import run_paper_trading
+from .paper_trading import generate_monthly_summary, run_paper_trading
 from .sample_data import sample_klines, sample_news, sample_quotes
 from .storage import Storage
 
@@ -225,6 +225,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--debug-urls", action="store_true", help="打印真实请求的数据接口 URL")
     parser.add_argument("--paper-trade", action="store_true", help="启用2万元本金的纸面模拟投资日志")
     parser.add_argument("--paper-capital", type=float, default=20_000.0, help="纸面模拟初始本金，默认20000")
+    parser.add_argument("--paper-summary", action="store_true", help="生成纸面模拟月度复盘")
+    parser.add_argument("--month", default="", help="月度复盘月份，格式 YYYY-MM；默认当前月份")
     parser.add_argument(
         "--codes",
         default="",
@@ -235,6 +237,12 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    if args.paper_summary:
+        month = args.month or datetime.now().strftime("%Y-%m")
+        summary_path = generate_monthly_summary(Settings().data_dir, month)
+        print(f"月度复盘已保存: {summary_path}")
+        raise SystemExit(0)
+
     requested_candidates = args.max_candidates
     if requested_candidates is None:
         requested_candidates = 5000 if args.full_scan else 120
