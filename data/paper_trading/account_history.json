@@ -1,0 +1,15 @@
+[
+  {
+    "run_date": "2026-07-17",
+    "cash": 20000.0,
+    "position_value": 0,
+    "total_value": 20000.0,
+    "daily_pnl": 0.0,
+    "daily_pnl_pct": 0.0,
+    "total_pnl": 0.0,
+    "total_pnl_pct": 0.0,
+    "position_count": 0,
+    "strategy_mode": "normal",
+    "market_note": "样本平均涨跌幅 -4.33%，下跌占比 89.9%，接近跌停样本 479 只。 判定为弱势/极端风险日。"
+  }
+]
