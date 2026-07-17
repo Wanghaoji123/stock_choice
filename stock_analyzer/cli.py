@@ -122,18 +122,20 @@ def fetch_explicit_codes(
             print("  跳过：未抓取到 K 线数据")
             continue
         latest = klines[-1]
-        quote = StockQuote(
-            code=code,
-            name=name,
-            market="sh" if code.startswith(("5", "6", "9")) else "sz",
-            price=latest.close,
-            pct_chg=latest.pct_chg,
-            volume=latest.volume,
-            amount=latest.amount,
-            turnover_rate=latest.turnover_rate,
-            market_cap=None,
-            fetched_at=datetime.now(),
-        )
+        quote = client.fetch_quote(code, name)
+        if quote is None:
+            quote = StockQuote(
+                code=code,
+                name=name,
+                market="sh" if code.startswith(("5", "6", "9")) else "sz",
+                price=latest.close,
+                pct_chg=latest.pct_chg,
+                volume=latest.volume,
+                amount=latest.amount,
+                turnover_rate=latest.turnover_rate,
+                market_cap=None,
+                fetched_at=datetime.now(),
+            )
         quotes.append(quote)
         klines_by_code[code] = klines
         news_by_code[code] = news
@@ -174,9 +176,11 @@ def print_report(picks) -> None:
         print("未筛选出候选股票。")
         return
     for rank, item in enumerate(picks, start=1):
+        price = f"{item.price:.2f}" if item.price is not None else "暂无"
+        pct_chg = f"{item.pct_chg:+.2f}%" if item.pct_chg is not None else "暂无"
         print(
             f"{rank}. {item.code} {item.name} "
-            f"总分 {item.score:.2f} | 量 {item.volume_score:.1f} "
+            f"现价 {price} 涨跌幅 {pct_chg} | 总分 {item.score:.2f} | 量 {item.volume_score:.1f} "
             f"额 {item.amount_score:.1f} 趋势 {item.trend_score:.1f} "
             f"流动性 {item.liquidity_score:.1f} 消息 {item.news_score:.1f} "
             f"风险扣分 {item.risk_penalty:.1f}"

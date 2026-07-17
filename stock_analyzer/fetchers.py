@@ -120,6 +120,85 @@ class EastMoneyClient:
                 print(f"  东方财富全市场行情失败，切换新浪行情中心: {exc}")
         return self._fetch_sina_a_share_quotes()
 
+    def fetch_quote(self, code: str, name: str | None = None) -> StockQuote | None:
+        try:
+            return self._fetch_eastmoney_quote(code, name)
+        except Exception as exc:
+            if self.settings.debug_urls:
+                print(f"  东方财富实时行情失败，切换新浪实时行情: {exc}")
+        return self._fetch_sina_quote(code, name)
+
+    def _quote_from_eastmoney_item(
+        self,
+        item: dict,
+        fetched_at: datetime,
+        fallback_code: str | None = None,
+        fallback_name: str | None = None,
+    ) -> StockQuote | None:
+        code = str(item.get("f12") or fallback_code or "")
+        name = str(item.get("f14") or fallback_name or code)
+        if not code or self._excluded(code, name):
+            return None
+        return StockQuote(
+            code=code,
+            name=name,
+            market=eastmoney_market(code),
+            price=_to_float(item.get("f2")),
+            pct_chg=_to_float(item.get("f3")),
+            volume=_to_float(item.get("f5")),
+            amount=_to_float(item.get("f6")),
+            turnover_rate=_to_float(item.get("f8")),
+            market_cap=_to_float(item.get("f20")),
+            fetched_at=fetched_at,
+        )
+
+    def _fetch_eastmoney_quote(self, code: str, name: str | None = None) -> StockQuote | None:
+        payload = self._get_json(
+            "https://push2.eastmoney.com/api/qt/stock/get",
+            {
+                "secid": eastmoney_secid(code),
+                "fields": "f12,f14,f2,f3,f5,f6,f8,f20",
+                "fltt": 2,
+                "invt": 2,
+            },
+        )
+        data = payload.get("data") or {}
+        if not data:
+            return None
+        return self._quote_from_eastmoney_item(data, datetime.now(), code, name)
+
+    def _fetch_sina_quote(self, code: str, name: str | None = None) -> StockQuote | None:
+        symbol = f"{eastmoney_market(code)}{code}"
+        raw = self._fetch_text(
+            f"https://hq.sinajs.cn/list={symbol}",
+            referer="https://finance.sina.com.cn/",
+        )
+        match = re.search(r'="(?P<data>.*)"', raw)
+        if not match:
+            return None
+        parts = match.group("data").split(",")
+        if len(parts) < 32 or not parts[0]:
+            return None
+        previous_close = _to_float(parts[2])
+        current_price = _to_float(parts[3])
+        pct_chg = None
+        if current_price is not None and previous_close:
+            pct_chg = (current_price - previous_close) / previous_close * 100
+        volume = _to_float(parts[8])
+        amount = _to_float(parts[9])
+        return StockQuote(
+            code=code,
+            name=name or parts[0] or code,
+            market=eastmoney_market(code),
+            price=current_price,
+            pct_chg=pct_chg,
+            volume=volume,
+            amount=amount,
+            turnover_rate=None,
+            market_cap=None,
+            fetched_at=datetime.now(),
+        )
+
     def _fetch_eastmoney_a_share_quotes(self) -> list[StockQuote]:
         fields = "f12,f14,f2,f3,f5,f6,f8,f20"
         fs = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23"
@@ -143,24 +222,9 @@ class EastMoneyClient:
             )
             rows = (payload.get("data") or {}).get("diff") or []
             for item in rows:
-                code = str(item.get("f12") or "")
-                name = str(item.get("f14") or "")
-                if not code or self._excluded(code, name):
-                    continue
-                quotes.append(
-                    StockQuote(
-                        code=code,
-                        name=name,
-                        market=eastmoney_market(code),
-                        price=_to_float(item.get("f2")),
-                        pct_chg=_to_float(item.get("f3")),
-                        volume=_to_float(item.get("f5")),
-                        amount=_to_float(item.get("f6")),
-                        turnover_rate=_to_float(item.get("f8")),
-                        market_cap=_to_float(item.get("f20")),
-                        fetched_at=fetched_at,
-                    )
-                )
+                quote = self._quote_from_eastmoney_item(item, fetched_at)
+                if quote is not None:
+                    quotes.append(quote)
             time.sleep(0.15)
         return quotes[: self.settings.max_candidates]
 
