@@ -1,0 +1,6 @@
+__pycache__/
+.repo.git/
+*.py[cod]
+data/*.sqlite3
+data/*.sqlite3-*
+data/recommendations_*.csv
