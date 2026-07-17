@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .models import Recommendation, StockQuote
+from .models import KLine, Recommendation, StockQuote
 
 
 LOT_SIZE = 100
@@ -80,6 +80,7 @@ def run_paper_trading(
     picks: list[Recommendation],
     quotes: list[StockQuote],
     initial_capital: float,
+    klines_by_code: dict[str, list[KLine]] | None = None,
 ) -> Path:
     paper_dir = data_dir / "paper_trading"
     paper_dir.mkdir(parents=True, exist_ok=True)
@@ -88,6 +89,8 @@ def run_paper_trading(
     operations_path = paper_dir / "operations.jsonl"
     strategy_path = paper_dir / "strategy.json"
     strategy_history_path = paper_dir / "strategy_history.json"
+    timing_plan_path = paper_dir / f"timing_plan_{run_date}.json"
+    timing_plan_history_path = paper_dir / "timing_plan_history.json"
     state = load_state(state_path, initial_capital)
     history = load_history(history_path)
     strategy = choose_strategy(history)
@@ -113,13 +116,25 @@ def run_paper_trading(
             }
         )
 
+    timing_plans = build_timing_plans(state, picks, strategy, klines_by_code or {})
     save_state(state_path, state)
     save_strategy(strategy_path, run_date, strategy)
     append_strategy_history(strategy_history_path, run_date, strategy)
+    save_timing_plan(timing_plan_path, run_date, timing_plans)
+    append_timing_plan_history(timing_plan_history_path, run_date, timing_plans)
     append_history(history_path, run_date, state, market_note, strategy)
     append_operations(operations_path, run_date, actions, strategy)
     report_path = paper_dir / f"{run_date}.md"
-    write_daily_report(report_path, run_date, state, picks, actions, market_note, strategy)
+    write_daily_report(
+        report_path,
+        run_date,
+        state,
+        picks,
+        actions,
+        market_note,
+        strategy,
+        timing_plans,
+    )
     return report_path
 
 
@@ -370,6 +385,31 @@ def append_strategy_history(path: Path, run_date: str, strategy: StrategyProfile
             "stop_loss_pct": strategy.stop_loss_pct,
             "reason": strategy.reason,
             "created_at": datetime.now().isoformat(timespec="seconds"),
+        }
+    )
+    history.sort(key=lambda item: str(item.get("run_date", "")))
+    with path.open("w", encoding="utf-8") as fp:
+        json.dump(history, fp, ensure_ascii=False, indent=2)
+
+
+def save_timing_plan(path: Path, run_date: str, timing_plans: list[dict[str, Any]]) -> None:
+    payload = {
+        "run_date": run_date,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "plans": timing_plans,
+    }
+    with path.open("w", encoding="utf-8") as fp:
+        json.dump(payload, fp, ensure_ascii=False, indent=2)
+
+
+def append_timing_plan_history(path: Path, run_date: str, timing_plans: list[dict[str, Any]]) -> None:
+    history = load_history(path)
+    history = [item for item in history if item.get("run_date") != run_date]
+    history.append(
+        {
+            "run_date": run_date,
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "plans": timing_plans,
         }
     )
     history.sort(key=lambda item: str(item.get("run_date", "")))
@@ -631,6 +671,149 @@ def buy_filter_reason(pick: Recommendation, strategy: StrategyProfile) -> tuple[
     return True, "通过开仓过滤。"
 
 
+def moving_average(klines: list[KLine], days: int) -> float | None:
+    if len(klines) < days:
+        return None
+    return sum(item.close for item in klines[-days:]) / days
+
+
+def recent_range(klines: list[KLine], days: int) -> tuple[float | None, float | None]:
+    if not klines:
+        return None, None
+    rows = klines[-days:]
+    return min(item.low for item in rows), max(item.high for item in rows)
+
+
+def average_amplitude(klines: list[KLine], days: int = 10) -> float:
+    rows = klines[-days:] if klines else []
+    values: list[float] = []
+    for item in rows:
+        if item.amplitude is not None:
+            values.append(item.amplitude)
+        elif item.close:
+            values.append((item.high - item.low) / item.close * 100)
+    return sum(values) / len(values) if values else 3.0
+
+
+def build_buy_timing_plan(
+    pick: Recommendation,
+    klines_by_code: dict[str, list[KLine]],
+    strategy: StrategyProfile,
+) -> dict[str, Any]:
+    price = pick.price
+    if price is None:
+        return {
+            "code": pick.code,
+            "name": pick.name,
+            "decision": "WAIT",
+            "reason": "没有最新价格，不能计算次日价位计划。",
+        }
+    valid, filter_reason = buy_filter_reason(pick, strategy)
+    klines = klines_by_code.get(pick.code) or []
+    ma5 = moving_average(klines, 5)
+    ma10 = moving_average(klines, 10)
+    ma20 = moving_average(klines, 20)
+    low20, high20 = recent_range(klines, 20)
+    amplitude = average_amplitude(klines)
+    pullback_pct = min(3.0, max(1.0, amplitude * 0.45))
+    buy_low = price * (1 - pullback_pct / 100)
+    support_candidates = [value for value in (ma5, ma10, ma20, low20) if value is not None and value < price]
+    if support_candidates:
+        buy_low = max(buy_low, max(support_candidates) * 0.995)
+    buy_high = price * 1.01
+    confirm = max(price * 1.015, (ma5 or price) * 1.005)
+    stop = min(price * 0.94, (ma20 or price) * 0.985)
+    if low20 is not None:
+        stop = min(stop, low20 * 0.985)
+    target1 = price * 1.04
+    target2 = price * 1.08
+    if high20 is not None and high20 > price:
+        target1 = min(target1, high20)
+        target2 = max(target1, high20 * 1.03)
+    decision = "PLAN_BUY" if valid else "WAIT"
+    reason_parts = [
+        filter_reason,
+        f"近10日平均振幅约 {amplitude:.1f}%，低吸区按回撤 {pullback_pct:.1f}% 估算。",
+    ]
+    if ma5 and ma10 and ma20:
+        reason_parts.append(f"均线参考：MA5 {ma5:.2f}，MA10 {ma10:.2f}，MA20 {ma20:.2f}。")
+    if low20 and high20:
+        reason_parts.append(f"近20日区间 {low20:.2f}-{high20:.2f}。")
+    return {
+        "code": pick.code,
+        "name": pick.name,
+        "decision": decision,
+        "buy_low": buy_low,
+        "buy_high": buy_high,
+        "confirm": confirm,
+        "stop": stop,
+        "target1": target1,
+        "target2": target2,
+        "reason": " ".join(reason_parts),
+    }
+
+
+def build_position_timing_plan(
+    position: Position,
+    klines_by_code: dict[str, list[KLine]],
+    strategy: StrategyProfile,
+) -> dict[str, Any]:
+    klines = klines_by_code.get(position.code) or []
+    ma5 = moving_average(klines, 5)
+    ma10 = moving_average(klines, 10)
+    ma20 = moving_average(klines, 20)
+    low20, high20 = recent_range(klines, 20)
+    stop_by_cost = position.avg_cost * (1 + strategy.stop_loss_pct / 100)
+    stop_by_trend = (ma20 * 0.985) if ma20 else position.last_price * 0.94
+    stop = max(stop_by_cost, stop_by_trend)
+    reduce_price = position.last_price * 1.05
+    if high20 and high20 > position.last_price:
+        reduce_price = min(reduce_price, high20)
+    target = max(position.avg_cost * 1.12, position.last_price * 1.08)
+    reason_parts = [
+        f"成本 {position.avg_cost:.2f}，当前浮动收益 {position.pnl_pct:+.2f}%。",
+        f"止损同时参考成本止损和 MA20 趋势线，取 {stop:.2f}。",
+    ]
+    if ma5 and ma10 and ma20:
+        reason_parts.append(f"均线参考：MA5 {ma5:.2f}，MA10 {ma10:.2f}，MA20 {ma20:.2f}。")
+    if low20 and high20:
+        reason_parts.append(f"近20日区间 {low20:.2f}-{high20:.2f}。")
+    return {
+        "code": position.code,
+        "name": position.name,
+        "decision": "HOLD_PLAN",
+        "stop": stop,
+        "reduce_price": reduce_price,
+        "target": target,
+        "reason": " ".join(reason_parts),
+    }
+
+
+def build_timing_plans(
+    state: PaperState,
+    picks: list[Recommendation],
+    strategy: StrategyProfile,
+    klines_by_code: dict[str, list[KLine]],
+) -> list[dict[str, Any]]:
+    plans: list[dict[str, Any]] = []
+    for position in state.positions.values():
+        plan = build_position_timing_plan(position, klines_by_code, strategy)
+        plan["plan_type"] = "position"
+        plans.append(plan)
+    for pick in picks:
+        plan = build_buy_timing_plan(pick, klines_by_code, strategy)
+        plan["plan_type"] = "candidate"
+        plans.append(plan)
+    return plans
+
+
+def format_price(value: object) -> str:
+    try:
+        return f"{float(value):.2f}"
+    except (TypeError, ValueError):
+        return "暂无"
+
+
 def write_daily_report(
     path: Path,
     run_date: str,
@@ -639,6 +822,7 @@ def write_daily_report(
     actions: list[dict[str, Any]],
     market_note: str,
     strategy: StrategyProfile,
+    timing_plans: list[dict[str, Any]],
 ) -> None:
     lines = [
         f"# 模拟投资日报 {run_date}",
@@ -680,6 +864,34 @@ def write_daily_report(
             lines.append(f"- {action['action']} {action['code']} {action['name']}：{action['reason']}")
         else:
             lines.append(f"- {action['action']}：{action['reason']}")
+    lines.extend(["", "## 次日价位计划", ""])
+    lines.append("说明：以下价位基于日 K 推导，用于下一交易日盘中观察，不代表已经成交。")
+    lines.append("")
+    position_plans = [plan for plan in timing_plans if plan.get("plan_type") == "position"]
+    candidate_plans = [plan for plan in timing_plans if plan.get("plan_type") == "candidate"]
+    if position_plans:
+        lines.append("持仓处理：")
+        for plan in position_plans:
+            lines.append(
+                f"- {plan['code']} {plan['name']}：跌破 {format_price(plan['stop'])} 先减风险；"
+                f"冲到 {format_price(plan['reduce_price'])} 附近可考虑减仓；"
+                f"强势目标 {format_price(plan['target'])}。{plan['reason']}"
+            )
+        lines.append("")
+    lines.append("候选观察：")
+    if candidate_plans:
+        for plan in candidate_plans:
+            if plan["decision"] == "PLAN_BUY":
+                lines.append(
+                    f"- {plan['code']} {plan['name']}：低吸区 {format_price(plan['buy_low'])}-"
+                    f"{format_price(plan['buy_high'])}；放量站上 {format_price(plan['confirm'])} 属于确认买点；"
+                    f"止损 {format_price(plan['stop'])}；止盈参考 {format_price(plan['target1'])}/"
+                    f"{format_price(plan['target2'])}。{plan['reason']}"
+                )
+            else:
+                lines.append(f"- {plan['code']} {plan['name']}：暂不买入。{plan['reason']}")
+    else:
+        lines.append("- 没有候选股可制定价位计划。")
     lines.extend(["", "## 当前持仓", ""])
     if state.positions:
         lines.append("| 代码 | 名称 | 股数 | 成本 | 最新价 | 市值 | 浮动收益 |")

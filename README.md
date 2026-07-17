@@ -107,6 +107,7 @@ python3 main.py --once --full-scan --news-candidates 120 --news-per-stock 5 --pa
 - 持仓触发 -8% 模拟止损、当日大跌、风险扣分升高或浮盈后转弱时模拟卖出。
 - 每天会记录账户现金、持仓市值、累计收益、今日操作和原因。
 - 如果最近记录连续表现较差，会自动提高开仓分数阈值、降低单票仓位和最大持仓数；如果连续表现较好，会小幅降低开仓分数阈值，但仍不突破最多 2 只持仓。
+- 日报会基于日 K 生成次日价位计划，包括低吸区、确认买点、止损位和止盈参考。这个计划用于次日盘中观察，不是分钟 K 级别的精确择时。
 
 ## 输出
 
@@ -114,6 +115,8 @@ python3 main.py --once --full-scan --news-candidates 120 --news-per-stock 5 --pa
 - 当日 CSV 报告：`data/recommendations_YYYY-MM-DD.csv`
 - 模拟盘状态：`data/paper_trading/state.json`
 - 模拟投资日报：`data/paper_trading/YYYY-MM-DD.md`
+- 日 K 次日价位计划：`data/paper_trading/timing_plan_YYYY-MM-DD.json`
+- 日 K 价位计划历史：`data/paper_trading/timing_plan_history.json`
 - 模拟账户历史：`data/paper_trading/account_history.json`
 - 模拟操作流水：`data/paper_trading/operations.jsonl`
 - 当前策略参数：`data/paper_trading/strategy.json`

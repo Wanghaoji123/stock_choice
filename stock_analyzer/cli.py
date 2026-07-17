@@ -27,7 +27,14 @@ def run_once(settings: Settings) -> int:
             storage.save_recommendations(run_date, picks)
             write_report(settings.data_dir / f"recommendations_{run_date}.csv", picks)
             if settings.paper_trade:
-                paper_path = run_paper_trading(settings.data_dir, run_date, picks, quotes, settings.paper_capital)
+                paper_path = run_paper_trading(
+                    settings.data_dir,
+                    run_date,
+                    picks,
+                    quotes,
+                    settings.paper_capital,
+                    klines_by_code,
+                )
                 print(f"模拟投资日报已保存: {paper_path}")
             print_report(picks)
             print(f"\n报告已保存: {settings.data_dir / f'recommendations_{run_date}.csv'}")
@@ -88,7 +95,14 @@ def run_once(settings: Settings) -> int:
         storage.save_recommendations(run_date, picks)
         write_report(settings.data_dir / f"recommendations_{run_date}.csv", picks)
         if settings.paper_trade:
-            paper_path = run_paper_trading(settings.data_dir, run_date, picks, quotes, settings.paper_capital)
+            paper_path = run_paper_trading(
+                settings.data_dir,
+                run_date,
+                picks,
+                quotes,
+                settings.paper_capital,
+                klines_by_code,
+            )
             print(f"模拟投资日报已保存: {paper_path}")
         print_report(picks)
         print(f"\n报告已保存: {settings.data_dir / f'recommendations_{run_date}.csv'}")

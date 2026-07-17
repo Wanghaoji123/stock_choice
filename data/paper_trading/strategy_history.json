@@ -7,6 +7,6 @@
     "max_positions": 2,
     "stop_loss_pct": -8.0,
     "reason": "历史样本少于3天，先使用默认保守参数。",
-    "created_at": "2026-07-17T18:41:09"
+    "created_at": "2026-07-17T20:46:22"
   }
 ]
