@@ -1,4 +1,5 @@
 __pycache__/
+.idea/
 .repo.git/
 *.py[cod]
 data/*.sqlite3
