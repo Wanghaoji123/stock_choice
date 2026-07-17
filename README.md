@@ -10,6 +10,16 @@
 
 ## 运行
 
+每天 17:30 以后只需要运行这一条命令：
+
+```bash
+python3 main.py --once --full-scan --news-candidates 120 --news-per-stock 5 --paper-trade --paper-capital 20000
+```
+
+这条命令会生成当天股票筛选结果、2 万本金模拟盘操作计划、收益记录和策略调整记录。
+
+注意：`python3 -m py_compile ...` 只是检查代码语法，不是每天运行模拟盘的命令。
+
 ```bash
 python3 main.py --once
 ```
@@ -62,10 +72,40 @@ python3 main.py --once --sample
 python3 main.py --daemon --hour 17 --minute 30
 ```
 
+启用 2 万本金纸面模拟投资：
+
+```bash
+python3 main.py --once --full-scan --news-candidates 120 --news-per-stock 5 --paper-trade --paper-capital 20000
+```
+
+建议在每个 A 股交易日 17:30 以后运行。这个时间点通常已经收盘，日 K、成交额和新闻数据更稳定。
+
+运行逻辑：
+
+- 当天 17:30 运行后，系统根据当天收盘数据生成“下一交易日模拟计划”。
+- 第二个交易日 17:30 再运行时，系统会先用新的收盘价更新持仓收益，验证上一轮计划，再生成新的计划。
+- 每次运行都会保存账户历史、操作流水和当前策略参数，后续筛选会读取这些记录调整模拟盘风险模式。
+
+纸面模拟规则偏保守：
+
+- 初始本金默认 20000 元，只做模拟记录，不会连接真实账户。
+- 单票最多约 10000 元，最多同时持有 2 只，按 A 股 100 股一手计算。
+- 极端弱势日不新开仓；例如样本平均跌幅较大、下跌占比过高或跌停样本较多。
+- 候选股必须达到分数、趋势和风险过滤条件才模拟买入。
+- 持仓触发 -8% 模拟止损、当日大跌、风险扣分升高或浮盈后转弱时模拟卖出。
+- 每天会记录账户现金、持仓市值、累计收益、今日操作和原因。
+- 如果最近记录连续表现较差，会自动提高开仓分数阈值、降低单票仓位和最大持仓数；如果连续表现较好，会小幅降低开仓分数阈值，但仍不突破最多 2 只持仓。
+
 ## 输出
 
 - SQLite 缓存：`data/stock_analysis.sqlite3`
 - 当日 CSV 报告：`data/recommendations_YYYY-MM-DD.csv`
+- 模拟盘状态：`data/paper_trading/state.json`
+- 模拟投资日报：`data/paper_trading/YYYY-MM-DD.md`
+- 模拟账户历史：`data/paper_trading/account_history.json`
+- 模拟操作流水：`data/paper_trading/operations.jsonl`
+- 当前策略参数：`data/paper_trading/strategy.json`
+- 策略调整历史：`data/paper_trading/strategy_history.json`
 
 ## 数据源
 
@@ -91,4 +131,4 @@ python3 main.py --daemon --hour 17 --minute 30
 - 流动性：成交额和换手率，权重 15%
 - 风险扣分：涨停追高、大跌破位、20 日高位回撤、监管/减持/业绩风险关键词
 
-系统会过滤 ST、退市股和北交所常见代码前缀。
+系统会过滤 ST、退市股、北交所常见代码前缀，以及科创板常见 `688`、`689` 代码前缀。

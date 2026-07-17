@@ -21,8 +21,10 @@ class Settings:
     top_n: int = 3
     use_sample_data: bool = False
     debug_urls: bool = False
+    paper_trade: bool = False
+    paper_capital: float = 20_000.0
     codes: tuple[str, ...] = ()
-    excluded_prefixes: tuple[str, ...] = ("8", "4")
+    excluded_prefixes: tuple[str, ...] = ("8", "4", "688", "689")
     excluded_name_tokens: tuple[str, ...] = ("ST", "*ST", "退")
     headers: dict[str, str] = field(
         default_factory=lambda: {

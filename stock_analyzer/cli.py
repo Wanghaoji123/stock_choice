@@ -10,6 +10,7 @@ from .analyzer import build_recommendations
 from .config import Settings
 from .fetchers import EastMoneyClient
 from .models import KLine, NewsItem, StockQuote
+from .paper_trading import run_paper_trading
 from .sample_data import sample_klines, sample_news, sample_quotes
 from .storage import Storage
 
@@ -25,6 +26,9 @@ def run_once(settings: Settings) -> int:
             run_date = datetime.now().strftime("%Y-%m-%d")
             storage.save_recommendations(run_date, picks)
             write_report(settings.data_dir / f"recommendations_{run_date}.csv", picks)
+            if settings.paper_trade:
+                paper_path = run_paper_trading(settings.data_dir, run_date, picks, quotes, settings.paper_capital)
+                print(f"模拟投资日报已保存: {paper_path}")
             print_report(picks)
             print(f"\n报告已保存: {settings.data_dir / f'recommendations_{run_date}.csv'}")
             print("提示：这是量化和新闻情绪筛选结果，不构成投资建议；买卖前请人工复核公告、财报和风险。")
@@ -83,6 +87,9 @@ def run_once(settings: Settings) -> int:
         run_date = datetime.now().strftime("%Y-%m-%d")
         storage.save_recommendations(run_date, picks)
         write_report(settings.data_dir / f"recommendations_{run_date}.csv", picks)
+        if settings.paper_trade:
+            paper_path = run_paper_trading(settings.data_dir, run_date, picks, quotes, settings.paper_capital)
+            print(f"模拟投资日报已保存: {paper_path}")
         print_report(picks)
         print(f"\n报告已保存: {settings.data_dir / f'recommendations_{run_date}.csv'}")
         print("提示：这是量化和新闻情绪筛选结果，不构成投资建议；买卖前请人工复核公告、财报和风险。")
@@ -216,6 +223,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--news-per-stock", type=int, default=8, help="每只股票抓取新闻数量")
     parser.add_argument("--sample", action="store_true", help="使用本地样例数据验证流程，不联网")
     parser.add_argument("--debug-urls", action="store_true", help="打印真实请求的数据接口 URL")
+    parser.add_argument("--paper-trade", action="store_true", help="启用2万元本金的纸面模拟投资日志")
+    parser.add_argument("--paper-capital", type=float, default=20_000.0, help="纸面模拟初始本金，默认20000")
     parser.add_argument(
         "--codes",
         default="",
@@ -239,6 +248,8 @@ def main() -> None:
         news_per_stock=args.news_per_stock,
         use_sample_data=args.sample,
         debug_urls=args.debug_urls,
+        paper_trade=args.paper_trade,
+        paper_capital=args.paper_capital,
         codes=tuple(item.strip() for item in args.codes.split(",") if item.strip()),
     )
     if args.daemon:
