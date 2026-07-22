@@ -74,6 +74,16 @@ class StrategyProfile:
     reason: str
 
 
+@dataclass(frozen=True)
+class MarketProfile:
+    regime: str
+    cash_fraction: float
+    buy_score_delta: float
+    max_position_value_multiplier: float
+    max_positions: int
+    reason: str
+
+
 def run_paper_trading(
     data_dir: Path,
     run_date: str,
@@ -93,28 +103,16 @@ def run_paper_trading(
     timing_plan_history_path = paper_dir / "timing_plan_history.json"
     state = load_state(state_path, initial_capital)
     history = load_history(history_path)
-    strategy = choose_strategy(history)
+    base_strategy = choose_strategy(history)
     quote_by_code = {quote.code: quote for quote in quotes}
     pick_by_code = {pick.code: pick for pick in picks}
     update_position_prices(state, quote_by_code)
 
-    market_note, market_stressed = assess_market(quotes)
+    market_note, market_profile = assess_market(quotes)
+    strategy = adapt_strategy_for_market(base_strategy, market_profile)
     actions: list[dict[str, Any]] = []
     actions.extend(apply_sell_rules(state, pick_by_code, strategy))
-    if not market_stressed:
-        actions.extend(apply_buy_rules(state, picks, strategy))
-    else:
-        actions.append(
-            {
-                "action": "WATCH",
-                "code": "",
-                "name": "",
-                "shares": 0,
-                "price": None,
-                "amount": 0.0,
-                "reason": "市场处于极端弱势，模拟盘不新开仓，等待次日确认承接。",
-            }
-        )
+    actions.extend(apply_buy_rules(state, picks, strategy, market_profile))
 
     timing_plans = build_timing_plans(state, picks, strategy, klines_by_code or {})
     save_state(state_path, state)
@@ -520,23 +518,81 @@ def update_position_prices(state: PaperState, quote_by_code: dict[str, StockQuot
             position.last_price = quote.price
 
 
-def assess_market(quotes: list[StockQuote]) -> tuple[str, bool]:
+def assess_market(quotes: list[StockQuote]) -> tuple[str, MarketProfile]:
     pct_values = [quote.pct_chg for quote in quotes if quote.pct_chg is not None]
     if not pct_values:
-        return "市场涨跌数据不足，按普通风险处理。", False
+        return "市场涨跌数据不足，按普通风险处理。", MarketProfile(
+            regime="normal",
+            cash_fraction=0.5,
+            buy_score_delta=0.0,
+            max_position_value_multiplier=1.0,
+            max_positions=2,
+            reason="缺少足够的市场样本，按默认仓位执行。",
+        )
     avg_pct = sum(pct_values) / len(pct_values)
     down_ratio = sum(1 for value in pct_values if value < 0) / len(pct_values)
     limit_down_like = sum(1 for value in pct_values if value <= -9.5)
-    stressed = avg_pct <= -3.0 or down_ratio >= 0.72 or limit_down_like >= 20
+    strong = avg_pct >= 1.2 and down_ratio <= 0.45 and limit_down_like < 10
+    weak = avg_pct <= -3.0 or down_ratio >= 0.72 or limit_down_like >= 20
+    mild_weak = avg_pct < 0.0 or down_ratio >= 0.55
     note = (
         f"样本平均涨跌幅 {avg_pct:+.2f}%，下跌占比 {down_ratio:.1%}，"
         f"接近跌停样本 {limit_down_like} 只。"
     )
-    if stressed:
+    if strong:
+        note += " 判定为强势日。"
+        return note, MarketProfile(
+            regime="strong",
+            cash_fraction=0.7,
+            buy_score_delta=-2.0,
+            max_position_value_multiplier=1.2,
+            max_positions=2,
+            reason="强势日允许正常开仓，适度提高单票资金上限。",
+        )
+    if weak:
         note += " 判定为弱势/极端风险日。"
-    else:
-        note += " 未触发极端风险过滤。"
-    return note, stressed
+        return note, MarketProfile(
+            regime="weak",
+            cash_fraction=0.2,
+            buy_score_delta=5.0,
+            max_position_value_multiplier=0.3,
+            max_positions=1,
+            reason="弱市保留小仓试仓，只做更严格的试探性开仓。",
+        )
+    if mild_weak:
+        note += " 判定为偏弱震荡日。"
+        return note, MarketProfile(
+            regime="weak",
+            cash_fraction=0.25,
+            buy_score_delta=3.0,
+            max_position_value_multiplier=0.4,
+            max_positions=1,
+            reason="偏弱震荡日保持小仓试仓，避免满仓追单。",
+        )
+    note += " 未触发极端风险过滤。"
+    return note, MarketProfile(
+        regime="normal",
+        cash_fraction=0.5,
+        buy_score_delta=0.0,
+        max_position_value_multiplier=1.0,
+        max_positions=2,
+        reason="普通市场按默认策略执行。",
+    )
+
+
+def adapt_strategy_for_market(strategy: StrategyProfile, market: MarketProfile) -> StrategyProfile:
+    buy_score = max(45.0, strategy.buy_score + market.buy_score_delta)
+    max_position_value = max(1000.0, strategy.max_position_value * market.max_position_value_multiplier)
+    max_positions = max(1, min(strategy.max_positions, market.max_positions))
+    reason = f"{strategy.reason} {market.reason}"
+    return StrategyProfile(
+        mode=f"{strategy.mode}-{market.regime}",
+        buy_score=buy_score,
+        max_position_value=max_position_value,
+        max_positions=max_positions,
+        stop_loss_pct=strategy.stop_loss_pct,
+        reason=reason,
+    )
 
 
 def apply_sell_rules(
@@ -586,6 +642,7 @@ def apply_buy_rules(
     state: PaperState,
     picks: list[Recommendation],
     strategy: StrategyProfile,
+    market: MarketProfile,
 ) -> list[dict[str, Any]]:
     actions: list[dict[str, Any]] = []
     for pick in picks:
@@ -607,7 +664,7 @@ def apply_buy_rules(
                 }
             )
             continue
-        budget = min(strategy.max_position_value, state.cash * 0.5)
+        budget = min(strategy.max_position_value, state.cash * market.cash_fraction)
         shares = int(budget // (pick.price * LOT_SIZE)) * LOT_SIZE
         if shares < LOT_SIZE:
             actions.append(
