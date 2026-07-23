@@ -1,10 +1,10 @@
 {
-  "run_date": "2026-07-22",
-  "mode": "normal-weak",
-  "buy_score": 58.0,
-  "max_position_value": 4000.0,
-  "max_positions": 1,
+  "run_date": "2026-07-23",
+  "mode": "normal-strong",
+  "buy_score": 53.0,
+  "max_position_value": 12000.0,
+  "max_positions": 2,
   "stop_loss_pct": -8.0,
-  "reason": "历史样本少于3天，先使用默认保守参数。 偏弱震荡日保持小仓试仓，避免满仓追单。",
-  "updated_at": "2026-07-22T18:30:09"
+  "reason": "近3次记录区间收益 +0.00%，维持默认策略。 强势日允许正常开仓，适度提高单票资金上限。",
+  "updated_at": "2026-07-23T16:27:22"
 }
