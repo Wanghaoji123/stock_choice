@@ -1,5 +1,12 @@
 {
   "initial_capital": 20000.0,
-  "cash": 20000.0,
-  "positions": {}
+  "cash": 16256.0,
+  "positions": {
+    "600267": {
+      "name": "海正药业",
+      "shares": 300,
+      "avg_cost": 12.48,
+      "last_price": 12.48
+    }
+  }
 }
