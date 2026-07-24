@@ -112,7 +112,7 @@ def run_paper_trading(
     strategy = adapt_strategy_for_market(base_strategy, market_profile)
     actions: list[dict[str, Any]] = []
     actions.extend(apply_sell_rules(state, pick_by_code, strategy))
-    actions.extend(apply_buy_rules(state, picks, strategy, market_profile))
+    actions.extend(apply_buy_rules(state, picks, strategy, market_profile, klines_by_code or {}))
 
     timing_plans = build_timing_plans(state, picks, strategy, klines_by_code or {})
     save_state(state_path, state)
@@ -544,10 +544,10 @@ def assess_market(quotes: list[StockQuote]) -> tuple[str, MarketProfile]:
         return note, MarketProfile(
             regime="strong",
             cash_fraction=0.7,
-            buy_score_delta=-2.0,
-            max_position_value_multiplier=1.2,
+            buy_score_delta=0.0,
+            max_position_value_multiplier=1.0,
             max_positions=2,
-            reason="强势日允许正常开仓，适度提高单票资金上限。",
+            reason="强势日只提高确认要求，不放松追高。",
         )
     if weak:
         note += " 判定为弱势/极端风险日。"
@@ -643,6 +643,7 @@ def apply_buy_rules(
     picks: list[Recommendation],
     strategy: StrategyProfile,
     market: MarketProfile,
+    klines_by_code: dict[str, list[KLine]],
 ) -> list[dict[str, Any]]:
     actions: list[dict[str, Any]] = []
     for pick in picks:
@@ -650,7 +651,7 @@ def apply_buy_rules(
             break
         if pick.code in state.positions or pick.price is None:
             continue
-        valid, reason = buy_filter_reason(pick, strategy)
+        valid, reason = buy_filter_reason(pick, strategy, klines_by_code.get(pick.code) or [])
         if not valid:
             actions.append(
                 {
@@ -714,17 +715,37 @@ def apply_buy_rules(
     return actions
 
 
-def buy_filter_reason(pick: Recommendation, strategy: StrategyProfile) -> tuple[bool, str]:
+def buy_filter_reason(
+    pick: Recommendation,
+    strategy: StrategyProfile,
+    klines: list[KLine] | None = None,
+) -> tuple[bool, str]:
     if pick.score < strategy.buy_score:
         return False, f"总分 {pick.score:.2f} 低于当前开仓阈值 {strategy.buy_score:.0f}。"
-    if pick.trend_score < 50.0:
+    if pick.trend_score < 60.0:
         return False, f"趋势分 {pick.trend_score:.1f} 偏弱。"
-    if pick.risk_penalty > 12.0:
+    if pick.risk_penalty > 10.0:
         return False, f"风险扣分 {pick.risk_penalty:.1f} 偏高。"
     if pick.pct_chg is not None and pick.pct_chg <= -3.0:
         return False, f"当日跌幅 {pick.pct_chg:.2f}%，不接下跌中的刀。"
-    if pick.pct_chg is not None and pick.pct_chg >= 7.0:
+    if pick.pct_chg is not None and pick.pct_chg >= 5.0:
         return False, f"当日涨幅 {pick.pct_chg:.2f}%，不追过热标的。"
+    klines = klines or []
+    if len(klines) >= 20:
+        closes = [item.close for item in klines]
+        last = closes[-1]
+        ma20 = moving_average(klines, 20)
+        ret_5 = (last - closes[-6]) / closes[-6] * 100 if closes[-6] else 0.0
+        ret_20 = (last - closes[-21]) / closes[-21] * 100 if closes[-21] else 0.0
+        high_20 = max(closes[-20:])
+        if ma20 is not None and last < ma20 * 1.005:
+            return False, "价格尚未有效站稳20日均线。"
+        if ret_20 < 5.0:
+            return False, f"近20日涨幅 {ret_20:.1f}%，中期趋势不足。"
+        if ret_5 >= 12.0 and ma20 is not None and last >= ma20 * 1.08:
+            return False, f"近5日涨幅 {ret_5:.1f}%，短线拉升过快。"
+        if high_20 > 0 and last >= high_20 * 0.985 and ret_5 >= 8.0:
+            return False, "股价接近阶段高位且短线过热。"
     return True, "通过开仓过滤。"
 
 
@@ -765,8 +786,8 @@ def build_buy_timing_plan(
             "decision": "WAIT",
             "reason": "没有最新价格，不能计算次日价位计划。",
         }
-    valid, filter_reason = buy_filter_reason(pick, strategy)
     klines = klines_by_code.get(pick.code) or []
+    valid, filter_reason = buy_filter_reason(pick, strategy, klines)
     ma5 = moving_average(klines, 5)
     ma10 = moving_average(klines, 10)
     ma20 = moving_average(klines, 20)
