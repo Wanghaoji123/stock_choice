@@ -50,5 +50,18 @@
     "position_count": 2,
     "strategy_mode": "normal-strong",
     "market_note": "样本平均涨跌幅 +2.00%，下跌占比 20.2%，接近跌停样本 6 只。 判定为强势日。"
+  },
+  {
+    "run_date": "2026-07-24",
+    "cash": 7460.0,
+    "position_value": 11999.0,
+    "total_value": 19459.0,
+    "daily_pnl": -415.0,
+    "daily_pnl_pct": -2.0882,
+    "total_pnl": -541.0,
+    "total_pnl_pct": -2.705,
+    "position_count": 2,
+    "strategy_mode": "normal-weak",
+    "market_note": "样本平均涨跌幅 -2.67%，下跌占比 90.0%，接近跌停样本 56 只。 判定为弱势/极端风险日。"
   }
 ]
