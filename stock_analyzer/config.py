@@ -21,6 +21,7 @@ class Settings:
     top_n: int = 3
     use_sample_data: bool = False
     debug_urls: bool = False
+    allow_missing_capital_flow: bool = False
     paper_trade: bool = False
     paper_capital: float = 20_000.0
     codes: tuple[str, ...] = ()

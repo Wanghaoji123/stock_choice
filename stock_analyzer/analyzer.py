@@ -3,8 +3,12 @@ from __future__ import annotations
 import statistics
 from datetime import datetime, timedelta
 
-from .models import KLine, NewsItem, Recommendation, StockQuote
+from .models import CapitalFlow, IntradayPoint, KLine, NewsItem, Recommendation, StockQuote
 from .sentiment import score_text
+
+
+MIN_CAPITAL_COHESION_SCORE = 58.0
+MAX_ENTRY_DISTRIBUTION_PENALTY = 12.0
 
 
 def _safe_mean(values: list[float]) -> float:
@@ -144,6 +148,78 @@ def _risk_penalty(quote: StockQuote, klines: list[KLine], news: list[NewsItem]) 
     return penalty, reasons[:2]
 
 
+def _capital_cohesion_score(
+    quote: StockQuote,
+    flow: CapitalFlow | None,
+    intraday: list[IntradayPoint],
+) -> tuple[float, float, list[str]]:
+    """把用户定义的两种资金合力组合转成最高优先级评分。
+
+    成功条件仅为：超大单和大单同向净流入，或超大单和中单同向净流入。
+    小单不参与合力确认；超大单转为净卖出时，其他单量的承接不视为强势。
+    """
+    if flow is None:
+        return 35.0, 0.0, ["未取得分单资金数据，资金合力分保守处理"]
+
+    small_net = flow.small_net or 0.0
+    medium_net = flow.medium_net or 0.0
+    large_net = flow.large_net or 0.0
+    extra_large_net = flow.extra_large_net or 0.0
+    retail_net = small_net + medium_net
+    institutional_net = large_net + extra_large_net
+    main_net = flow.main_net if flow.main_net is not None else institutional_net + retail_net
+    turnover_amount = max(quote.amount or 0.0, 1.0)
+    inst_ratio = institutional_net / turnover_amount
+    retail_ratio = retail_net / turnover_amount
+    score = 45.0
+    distribution_penalty = 0.0
+    reasons: list[str] = []
+
+    extra_large_large = extra_large_net > 0 and large_net > 0
+    extra_large_medium = extra_large_net > 0 and medium_net > 0
+    if extra_large_large and extra_large_medium:
+        score += 45.0
+        reasons.append("超大单、大单、中单同步净流入，三路资金合力")
+    elif extra_large_large:
+        score += 40.0
+        reasons.append("超大单与大单同向净流入，资金合力确认")
+    elif extra_large_medium:
+        score += 36.0
+        reasons.append("超大单与中单同向净流入，资金合力确认")
+    elif extra_large_net < 0 < (large_net + medium_net):
+        severity = min(32.0, 14.0 + abs(extra_large_net / turnover_amount) * 240.0)
+        distribution_penalty += severity
+        score -= 28.0
+        reasons.append("超大单净卖出而大/中单承接，疑似高位派发")
+    elif institutional_net < 0 < retail_net:
+        severity = min(32.0, 12.0 + abs(inst_ratio) * 220.0 + retail_ratio * 80.0)
+        distribution_penalty += severity
+        score -= 28.0
+        reasons.append("中小单承接但超大/大单净卖出，疑似拉高派发")
+    elif institutional_net < 0:
+        distribution_penalty += min(22.0, 8.0 + abs(inst_ratio) * 180.0)
+        score -= 18.0
+        reasons.append("超大/大单净流出，资金主导方向偏弱")
+    else:
+        reasons.append("分单资金方向不明确")
+
+    if intraday and quote.high_price and quote.low_price and quote.price:
+        day_range = quote.high_price - quote.low_price
+        pullback = (quote.high_price - quote.price) / day_range if day_range > 0 else 0.0
+        above_average = sum(
+            1 for row in intraday if row.average_price is not None and row.price >= row.average_price
+        ) / len(intraday)
+        if pullback >= 0.55 and quote.pct_chg is not None and quote.pct_chg > 2:
+            distribution_penalty += 14.0
+            score -= 12.0
+            reasons.append("盘中冲高后回撤过半，上攻承接不足")
+        elif pullback <= 0.25 and above_average >= 0.65:
+            score += 12.0
+            reasons.append("大部分分时位于均价线上方，价格推进稳定")
+
+    return max(0.0, min(100.0, score)), distribution_penalty, reasons[:3]
+
+
 def score_news(news: list[NewsItem]) -> tuple[float, list[str]]:
     if not news:
         return 0.0, ["未抓取到近期相关新闻，消息面不给加分"]
@@ -171,6 +247,9 @@ def build_recommendations(
     klines_by_code: dict[str, list[KLine]],
     news_by_code: dict[str, list[NewsItem]],
     top_n: int,
+    flows_by_code: dict[str, CapitalFlow] | None = None,
+    intraday_by_code: dict[str, list[IntradayPoint]] | None = None,
+    require_capital_cohesion: bool = False,
 ) -> list[Recommendation]:
     recommendations: list[Recommendation] = []
     for quote in quotes:
@@ -188,13 +267,28 @@ def build_recommendations(
         trend_score, trend_reasons = _trend_score(klines)
         liquidity_score, liquidity_reasons = _liquidity_score(quote, latest)
         risk_penalty, risk_reasons = _risk_penalty(quote, klines, news)
+        capital_cohesion_score, distribution_penalty, cohesion_reasons = _capital_cohesion_score(
+            quote,
+            (flows_by_code or {}).get(quote.code),
+            (intraday_by_code or {}).get(quote.code, []),
+        )
+        if require_capital_cohesion and (
+            quote.code not in (flows_by_code or {})
+            or capital_cohesion_score < MIN_CAPITAL_COHESION_SCORE
+            or distribution_penalty > MAX_ENTRY_DISTRIBUTION_PENALTY
+        ):
+            # 资金结构仍然是第一条件，但这里放宽到“明显不合力”才剔除，
+            # 避免市场偏强但分单结构不够完美时候选被全部过滤掉。
+            continue
         capital_score = volume_score * 0.5 + amount_score * 0.5
         score = (
-            capital_score * 0.35
-            + trend_score * 0.25
-            + news_score * 0.20
-            + liquidity_score * 0.15
+            capital_cohesion_score * 0.42
+            + capital_score * 0.22
+            + trend_score * 0.16
+            + news_score * 0.12
+            + liquidity_score * 0.08
             - risk_penalty
+            - distribution_penalty
         )
 
         reasons = [
@@ -206,6 +300,7 @@ def build_recommendations(
             else "成交额基准不足",
             *trend_reasons,
             *liquidity_reasons,
+            *cohesion_reasons,
             *news_reasons,
             *risk_reasons,
         ]
@@ -221,11 +316,20 @@ def build_recommendations(
                 news_score=news_score,
                 trend_score=trend_score,
                 liquidity_score=liquidity_score,
+                capital_cohesion_score=capital_cohesion_score,
+                distribution_penalty=distribution_penalty,
                 risk_penalty=risk_penalty,
                 reasons=tuple(reasons[:6]),
                 quote=quote,
                 latest_news=tuple((news_by_code.get(quote.code) or [])[:3]),
             )
         )
-    recommendations.sort(key=lambda item: item.score, reverse=True)
+    # 资金合力已确认时，先按合力强弱排序；综合分仅作为同等合力下的次级排序。
+    # 这样不会因新闻、换手等次要分项偏低，把真正的大中小单同向标的排到后面。
+    if require_capital_cohesion:
+        recommendations.sort(
+            key=lambda item: (item.capital_cohesion_score, item.score), reverse=True
+        )
+    else:
+        recommendations.sort(key=lambda item: item.score, reverse=True)
     return recommendations[:top_n]

@@ -9,7 +9,7 @@ from pathlib import Path
 from .analyzer import build_recommendations
 from .config import Settings
 from .fetchers import EastMoneyClient
-from .models import KLine, NewsItem, StockQuote
+from .models import CapitalFlow, IntradayPoint, KLine, NewsItem, StockQuote
 from .paper_trading import generate_monthly_summary, run_paper_trading
 from .sample_data import sample_klines, sample_news, sample_quotes
 from .storage import Storage
@@ -22,7 +22,16 @@ def run_once(settings: Settings) -> int:
     try:
         if settings.codes:
             quotes, klines_by_code, news_by_code = fetch_explicit_codes(client, storage, settings)
-            picks = build_recommendations(quotes, klines_by_code, news_by_code, settings.top_n)
+            flows_by_code, intraday_by_code = fetch_market_structure(client, quotes)
+            picks = build_recommendations(
+                quotes,
+                klines_by_code,
+                news_by_code,
+                settings.top_n,
+                flows_by_code,
+                intraday_by_code,
+                require_capital_cohesion=not settings.allow_missing_capital_flow,
+            )
             run_date = datetime.now().strftime("%Y-%m-%d")
             storage.save_recommendations(run_date, picks)
             write_report(settings.data_dir / f"recommendations_{run_date}.csv", picks)
@@ -73,8 +82,21 @@ def run_once(settings: Settings) -> int:
             shortlist_size = min(len(quotes), max(settings.top_n, settings.news_candidates))
             print(f"第一阶段完成：已对 {len(klines_by_code)} 只股票做资金/趋势/流动性初筛。")
             print(f"第二阶段：对初筛前 {shortlist_size} 只抓取消息面，再输出最终 {settings.top_n} 只。")
-            preliminary = build_recommendations(quotes, klines_by_code, {}, shortlist_size)
             quote_by_code = {quote.code: quote for quote in quotes}
+            # 资金合力是第一决策条件，不能先用旧综合分裁掉标的再去看盘口。
+            # 因此对本轮全部初筛样本获取分单资金；之后才按合力优先缩小消息面范围。
+            structure_quotes = quotes
+            print(f"资金合力复核：对全部 {len(structure_quotes)} 只初筛样本抓取分单资金与分时结构。")
+            flows_by_code, intraday_by_code = fetch_market_structure(client, structure_quotes)
+            preliminary = build_recommendations(
+                structure_quotes,
+                klines_by_code,
+                {},
+                shortlist_size,
+                flows_by_code,
+                intraday_by_code,
+                require_capital_cohesion=not settings.allow_missing_capital_flow,
+            )
             for idx, item in enumerate(preliminary, start=1):
                 quote = quote_by_code[item.code]
                 print(f"[{idx}/{len(preliminary)}] 抓取消息 {quote.code} {quote.name}")
@@ -90,7 +112,15 @@ def run_once(settings: Settings) -> int:
         else:
             final_quotes = quotes
 
-        picks = build_recommendations(final_quotes, klines_by_code, news_by_code, settings.top_n)
+        picks = build_recommendations(
+            final_quotes,
+            klines_by_code,
+            news_by_code,
+            settings.top_n,
+            flows_by_code if not settings.use_sample_data else {},
+            intraday_by_code if not settings.use_sample_data else {},
+            require_capital_cohesion=not settings.use_sample_data and not settings.allow_missing_capital_flow,
+        )
         run_date = datetime.now().strftime("%Y-%m-%d")
         storage.save_recommendations(run_date, picks)
         write_report(settings.data_dir / f"recommendations_{run_date}.csv", picks)
@@ -167,6 +197,23 @@ def fetch_explicit_codes(
     return quotes, klines_by_code, news_by_code
 
 
+def fetch_market_structure(
+    client: EastMoneyClient, quotes: list[StockQuote]
+) -> tuple[dict[str, CapitalFlow], dict[str, list[IntradayPoint]]]:
+    flows: dict[str, CapitalFlow] = {}
+    intraday: dict[str, list[IntradayPoint]] = {}
+    for index, quote in enumerate(quotes, start=1):
+        print(f"[{index}/{len(quotes)}] 资金合力 {quote.code} {quote.name}")
+        flow = client.fetch_capital_flow(quote.code)
+        if flow is not None:
+            flows[quote.code] = flow
+        rows = client.fetch_intraday_trends(quote.code)
+        if rows:
+            intraday[quote.code] = rows
+        time.sleep(0.12)
+    return flows, intraday
+
+
 def write_report(path: Path, picks) -> None:
     with path.open("w", newline="", encoding="utf-8-sig") as fp:
         writer = csv.DictWriter(
@@ -182,6 +229,8 @@ def write_report(path: Path, picks) -> None:
                 "news_score",
                 "trend_score",
                 "liquidity_score",
+                "capital_cohesion_score",
+                "distribution_penalty",
                 "risk_penalty",
                 "reasons",
             ],
@@ -204,6 +253,7 @@ def print_report(picks) -> None:
             f"现价 {price} 涨跌幅 {pct_chg} | 总分 {item.score:.2f} | 量 {item.volume_score:.1f} "
             f"额 {item.amount_score:.1f} 趋势 {item.trend_score:.1f} "
             f"流动性 {item.liquidity_score:.1f} 消息 {item.news_score:.1f} "
+            f"资金合力 {item.capital_cohesion_score:.1f} 派发扣分 {item.distribution_penalty:.1f} "
             f"风险扣分 {item.risk_penalty:.1f}"
         )
         for reason in item.reasons:
@@ -237,6 +287,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--news-per-stock", type=int, default=8, help="每只股票抓取新闻数量")
     parser.add_argument("--sample", action="store_true", help="使用本地样例数据验证流程，不联网")
     parser.add_argument("--debug-urls", action="store_true", help="打印真实请求的数据接口 URL")
+    parser.add_argument(
+        "--allow-missing-capital-flow",
+        action="store_true",
+        help="分单资金接口暂不可用时仍保留候选；默认严格剔除，确保资金合力优先",
+    )
     parser.add_argument("--paper-trade", action="store_true", help="启用2万元本金的纸面模拟投资日志")
     parser.add_argument("--paper-capital", type=float, default=20_000.0, help="纸面模拟初始本金，默认20000")
     parser.add_argument("--paper-summary", action="store_true", help="生成纸面模拟月度复盘")
@@ -270,6 +325,7 @@ def main() -> None:
         news_per_stock=args.news_per_stock,
         use_sample_data=args.sample,
         debug_urls=args.debug_urls,
+        allow_missing_capital_flow=args.allow_missing_capital_flow,
         paper_trade=args.paper_trade,
         paper_capital=args.paper_capital,
         codes=tuple(item.strip() for item in args.codes.split(",") if item.strip()),

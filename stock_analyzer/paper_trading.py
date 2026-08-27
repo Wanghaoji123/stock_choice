@@ -14,6 +14,10 @@ LOT_SIZE = 100
 MAX_POSITIONS = 2
 MAX_POSITION_VALUE = 10_000.0
 MIN_BUY_SCORE = 55.0
+# 新开仓仍优先看资金结构，但不再要求过于苛刻的完美合力。
+# 这能避免强势但分单不够漂亮的标的被全部挡掉。
+MIN_CAPITAL_COHESION_SCORE = 58.0
+MAX_ENTRY_DISTRIBUTION_PENALTY = 12.0
 
 
 @dataclass
@@ -697,7 +701,10 @@ def apply_buy_rules(
                 "shares": shares,
                 "price": pick.price,
                 "amount": amount,
-                "reason": f"分数、趋势、风险过滤均通过，按 {strategy.mode} 模式模拟买入。",
+                "reason": (
+                    f"资金合力 {pick.capital_cohesion_score:.1f} 已确认，"
+                    f"趋势、风险过滤均通过，按 {strategy.mode} 模式模拟买入。"
+                ),
             }
         )
     if not actions:
@@ -720,15 +727,25 @@ def buy_filter_reason(
     strategy: StrategyProfile,
     klines: list[KLine] | None = None,
 ) -> tuple[bool, str]:
-    if pick.score < strategy.buy_score:
-        return False, f"总分 {pick.score:.2f} 低于当前开仓阈值 {strategy.buy_score:.0f}。"
-    if pick.trend_score < 60.0:
+    if pick.distribution_penalty > MAX_ENTRY_DISTRIBUTION_PENALTY:
+        return False, (
+            f"检测到派发结构，惩罚 {pick.distribution_penalty:.1f}："
+            "中小单承接未获大单/超大单合力确认。"
+        )
+    if pick.capital_cohesion_score < MIN_CAPITAL_COHESION_SCORE:
+        return False, (
+            f"资金合力分 {pick.capital_cohesion_score:.1f} 低于"
+            f"开仓下限 {MIN_CAPITAL_COHESION_SCORE:.0f}。"
+        )
+    # 总分现在只承担候选排序作用：资金合力通过后，不再让新闻或换手等次要项
+    # 反向否决开仓；仍保留趋势、风险和追涨限制。
+    if pick.trend_score < 48.0:
         return False, f"趋势分 {pick.trend_score:.1f} 偏弱。"
-    if pick.risk_penalty > 10.0:
+    if pick.risk_penalty > 16.0:
         return False, f"风险扣分 {pick.risk_penalty:.1f} 偏高。"
-    if pick.pct_chg is not None and pick.pct_chg <= -3.0:
+    if pick.pct_chg is not None and pick.pct_chg <= -5.0:
         return False, f"当日跌幅 {pick.pct_chg:.2f}%，不接下跌中的刀。"
-    if pick.pct_chg is not None and pick.pct_chg >= 5.0:
+    if pick.pct_chg is not None and pick.pct_chg >= 7.5:
         return False, f"当日涨幅 {pick.pct_chg:.2f}%，不追过热标的。"
     klines = klines or []
     if len(klines) >= 20:
@@ -738,14 +755,14 @@ def buy_filter_reason(
         ret_5 = (last - closes[-6]) / closes[-6] * 100 if closes[-6] else 0.0
         ret_20 = (last - closes[-21]) / closes[-21] * 100 if closes[-21] else 0.0
         high_20 = max(closes[-20:])
-        if ma20 is not None and last < ma20 * 1.005:
-            return False, "价格尚未有效站稳20日均线。"
-        if ret_20 < 5.0:
+        if ma20 is not None and last < ma20 * 0.98:
+            return False, "价格明显跌破20日均线。"
+        if ret_20 < -6.0:
             return False, f"近20日涨幅 {ret_20:.1f}%，中期趋势不足。"
-        if ret_5 >= 12.0 and ma20 is not None and last >= ma20 * 1.08:
+        if ret_5 >= 15.0 and ma20 is not None and last >= ma20 * 1.10:
             return False, f"近5日涨幅 {ret_5:.1f}%，短线拉升过快。"
-        if high_20 > 0 and last >= high_20 * 0.985 and ret_5 >= 8.0:
-            return False, "股价接近阶段高位且短线过热。"
+        if high_20 > 0 and last >= high_20 * 0.995 and ret_5 >= 15.0:
+            return False, "股价逼近20日压力位且短线急涨，等待突破确认或回踩。"
     return True, "通过开仓过滤。"
 
 
@@ -922,7 +939,7 @@ def write_daily_report(
         "## 当前策略",
         "",
         f"- 模式：{strategy.mode}",
-        f"- 开仓分数阈值：{strategy.buy_score:.0f}",
+        f"- 综合分参考线：{strategy.buy_score:.0f}（仅用于排序，不作为开仓否决条件）",
         f"- 单票上限：{strategy.max_position_value:.2f}",
         f"- 最大持仓数：{strategy.max_positions}",
         f"- 止损线：{strategy.stop_loss_pct:.0f}%",
@@ -988,7 +1005,9 @@ def write_daily_report(
             pct = f"{pick.pct_chg:+.2f}%" if pick.pct_chg is not None else "暂无"
             lines.append(
                 f"- {rank}. {pick.code} {pick.name}：价格 {pick.price}，涨跌幅 {pct}，"
-                f"总分 {pick.score:.2f}，趋势 {pick.trend_score:.1f}，风险扣分 {pick.risk_penalty:.1f}。"
+                f"总分 {pick.score:.2f}，资金合力 {pick.capital_cohesion_score:.1f}，"
+                f"派发惩罚 {pick.distribution_penalty:.1f}，趋势 {pick.trend_score:.1f}，"
+                f"风险扣分 {pick.risk_penalty:.1f}。"
             )
     else:
         lines.append("- 未筛选出候选股票。")

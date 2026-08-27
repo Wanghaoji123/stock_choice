@@ -63,5 +63,70 @@
     "position_count": 2,
     "strategy_mode": "normal-weak",
     "market_note": "样本平均涨跌幅 -2.67%，下跌占比 90.0%，接近跌停样本 56 只。 判定为弱势/极端风险日。"
+  },
+  {
+    "run_date": "2026-07-28",
+    "cash": 15445.0,
+    "position_value": 3516.0,
+    "total_value": 18961.0,
+    "daily_pnl": -498.0,
+    "daily_pnl_pct": -2.5592,
+    "total_pnl": -1039.0,
+    "total_pnl_pct": -5.195,
+    "position_count": 1,
+    "strategy_mode": "normal-weak",
+    "market_note": "样本平均涨跌幅 -0.55%，下跌占比 49.2%，接近跌停样本 94 只。 判定为弱势/极端风险日。"
+  },
+  {
+    "run_date": "2026-07-29",
+    "cash": 15445.0,
+    "position_value": 3552.0,
+    "total_value": 18997.0,
+    "daily_pnl": 36.0,
+    "daily_pnl_pct": 0.1899,
+    "total_pnl": -1003.0,
+    "total_pnl_pct": -5.015,
+    "position_count": 1,
+    "strategy_mode": "defensive-weak",
+    "market_note": "样本平均涨跌幅 +1.35%，下跌占比 21.0%，接近跌停样本 22 只。 判定为弱势/极端风险日。"
+  },
+  {
+    "run_date": "2026-07-30",
+    "cash": 18901.0,
+    "position_value": 0,
+    "total_value": 18901.0,
+    "daily_pnl": 0.0,
+    "daily_pnl_pct": 0.0,
+    "total_pnl": -1099.0,
+    "total_pnl_pct": -5.495,
+    "position_count": 0,
+    "strategy_mode": "defensive-weak",
+    "market_note": "样本平均涨跌幅 -1.61%，下跌占比 63.8%，接近跌停样本 203 只。 判定为弱势/极端风险日。"
+  },
+  {
+    "run_date": "2026-07-31",
+    "cash": 18901.0,
+    "position_value": 0,
+    "total_value": 18901.0,
+    "daily_pnl": 0.0,
+    "daily_pnl_pct": 0.0,
+    "total_pnl": -1099.0,
+    "total_pnl_pct": -5.495,
+    "position_count": 0,
+    "strategy_mode": "defensive-strong",
+    "market_note": "样本平均涨跌幅 +2.47%，下跌占比 14.8%，接近跌停样本 1 只。 判定为强势日。"
+  },
+  {
+    "run_date": "2026-08-04",
+    "cash": 18901.0,
+    "position_value": 0,
+    "total_value": 18901.0,
+    "daily_pnl": 0.0,
+    "daily_pnl_pct": 0.0,
+    "total_pnl": -1099.0,
+    "total_pnl_pct": -5.495,
+    "position_count": 0,
+    "strategy_mode": "normal-strong",
+    "market_note": "样本平均涨跌幅 +1.76%，下跌占比 33.5%，接近跌停样本 1 只。 判定为强势日。"
   }
 ]

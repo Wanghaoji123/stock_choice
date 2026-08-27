@@ -12,7 +12,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from .config import Settings
-from .models import KLine, NewsItem, StockQuote
+from .models import CapitalFlow, IntradayPoint, KLine, NewsItem, StockQuote
 
 
 def _to_float(value: object) -> float | None:
@@ -150,6 +150,10 @@ class EastMoneyClient:
             turnover_rate=_to_float(item.get("f8")),
             market_cap=_to_float(item.get("f20")),
             fetched_at=fetched_at,
+            open_price=_to_float(item.get("f17")),
+            high_price=_to_float(item.get("f15")),
+            low_price=_to_float(item.get("f16")),
+            previous_close=_to_float(item.get("f18")),
         )
 
     def _fetch_eastmoney_quote(self, code: str, name: str | None = None) -> StockQuote | None:
@@ -157,7 +161,7 @@ class EastMoneyClient:
             "https://push2.eastmoney.com/api/qt/stock/get",
             {
                 "secid": eastmoney_secid(code),
-                "fields": "f12,f14,f2,f3,f5,f6,f8,f20",
+                "fields": "f12,f14,f2,f3,f5,f6,f8,f15,f16,f17,f18,f20",
                 "fltt": 2,
                 "invt": 2,
             },
@@ -197,10 +201,14 @@ class EastMoneyClient:
             turnover_rate=None,
             market_cap=None,
             fetched_at=datetime.now(),
+            open_price=_to_float(parts[1]),
+            high_price=_to_float(parts[4]),
+            low_price=_to_float(parts[5]),
+            previous_close=previous_close,
         )
 
     def _fetch_eastmoney_a_share_quotes(self) -> list[StockQuote]:
-        fields = "f12,f14,f2,f3,f5,f6,f8,f20"
+        fields = "f12,f14,f2,f3,f5,f6,f8,f15,f16,f17,f18,f20"
         fs = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23"
         quotes: list[StockQuote] = []
         fetched_at = datetime.now()
@@ -272,12 +280,84 @@ class EastMoneyClient:
                         turnover_rate=_to_float(item.get("turnoverratio")),
                         market_cap=_to_float(item.get("mktcap")),
                         fetched_at=fetched_at,
+                        open_price=_to_float(item.get("open")),
+                        high_price=_to_float(item.get("high")),
+                        low_price=_to_float(item.get("low")),
+                        previous_close=_to_float(item.get("settlement")),
                     )
                 )
                 if len(quotes) >= self.settings.max_candidates:
                     return quotes
             time.sleep(0.15)
         return quotes[: self.settings.max_candidates]
+
+    def fetch_capital_flow(self, code: str) -> CapitalFlow | None:
+        """获取当日超大/大/中/小单净流入。接口无盘中数据时返回 None。"""
+        try:
+            payload = self._get_json(
+                "https://push2.eastmoney.com/api/qt/stock/fflow/get",
+                {
+                    "secid": eastmoney_secid(code),
+                    "klt": 1,
+                    "lmt": 0,
+                    "fields1": "f1,f2,f3,f7",
+                    "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
+                },
+            )
+        except Exception:
+            return None
+        rows = (payload.get("data") or {}).get("klines") or []
+        if not rows:
+            return None
+        parts = str(rows[-1]).split(",")
+        if len(parts) < 6:
+            return None
+        return CapitalFlow(
+            code=code,
+            fetched_at=datetime.now(),
+            main_net=_to_float(parts[1]),
+            small_net=_to_float(parts[2]),
+            medium_net=_to_float(parts[3]),
+            large_net=_to_float(parts[4]),
+            extra_large_net=_to_float(parts[5]),
+        )
+
+    def fetch_intraday_trends(self, code: str) -> list[IntradayPoint]:
+        """获取分时价格、均价和成交，用于识别冲高滞涨与回落。"""
+        try:
+            payload = self._get_json(
+                "https://push2his.eastmoney.com/api/qt/stock/trends2/get",
+                {
+                    "secid": eastmoney_secid(code),
+                    "ndays": 1,
+                    "iscr": 0,
+                    "iscca": 0,
+                    "fields1": "f1,f2,f3,f5,f6,f7,f8,f9,f10,f11,f12,f13",
+                    "fields2": "f51,f52,f53,f54,f55,f56,f57,f58",
+                },
+            )
+        except Exception:
+            return []
+        rows: list[IntradayPoint] = []
+        for raw in (payload.get("data") or {}).get("trends") or []:
+            parts = str(raw).split(",")
+            if len(parts) < 2:
+                continue
+            try:
+                timestamp = datetime.strptime(parts[0], "%Y-%m-%d %H:%M")
+                price = float(parts[1])
+            except ValueError:
+                continue
+            rows.append(
+                IntradayPoint(
+                    timestamp=timestamp,
+                    price=price,
+                    average_price=_to_float(parts[2]) if len(parts) > 2 else None,
+                    volume=_to_float(parts[3]) if len(parts) > 3 else None,
+                    amount=_to_float(parts[4]) if len(parts) > 4 else None,
+                )
+            )
+        return rows
 
     def _excluded(self, code: str, name: str) -> bool:
         if code.startswith(self.settings.excluded_prefixes):

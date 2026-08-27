@@ -1,18 +1,5 @@
 {
   "initial_capital": 20000.0,
-  "cash": 7460.0,
-  "positions": {
-    "600267": {
-      "name": "海正药业",
-      "shares": 300,
-      "avg_cost": 12.48,
-      "last_price": 11.56
-    },
-    "000977": {
-      "name": "浪潮信息",
-      "shares": 100,
-      "avg_cost": 87.96,
-      "last_price": 85.31
-    }
-  }
+  "cash": 18901.0,
+  "positions": {}
 }
