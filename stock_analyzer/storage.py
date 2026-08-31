@@ -5,7 +5,7 @@ import sqlite3
 from pathlib import Path
 from typing import Iterable
 
-from .models import KLine, NewsItem, Recommendation, StockQuote
+from .models import CapitalFlow, KLine, NewsItem, Recommendation, StockQuote
 
 
 class Storage:
@@ -46,6 +46,13 @@ class Storage:
                 rank INTEGER NOT NULL,
                 payload TEXT NOT NULL,
                 PRIMARY KEY (run_date, rank)
+            );
+            CREATE TABLE IF NOT EXISTS capital_flows (
+                code TEXT NOT NULL,
+                trade_date TEXT NOT NULL,
+                fetched_at TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                PRIMARY KEY (code, trade_date)
             );
             """
         )
@@ -88,6 +95,23 @@ class Storage:
         ]
         self.conn.executemany(
             "INSERT OR REPLACE INTO news(code, url, payload) VALUES(?, ?, ?)",
+            payloads,
+        )
+        self.conn.commit()
+
+    def save_capital_flows(self, trade_date: str, rows: Iterable[CapitalFlow]) -> None:
+        payloads = [
+            (
+                item.code,
+                trade_date,
+                item.fetched_at.isoformat(),
+                json.dumps(item.__dict__, default=str, ensure_ascii=False),
+            )
+            for item in rows
+        ]
+        self.conn.executemany(
+            """INSERT OR REPLACE INTO capital_flows(code, trade_date, fetched_at, payload)
+               VALUES(?, ?, ?, ?)""",
             payloads,
         )
         self.conn.commit()

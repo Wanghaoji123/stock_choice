@@ -14,6 +14,13 @@ LOT_SIZE = 100
 MAX_POSITIONS = 2
 MAX_POSITION_VALUE = 10_000.0
 MIN_BUY_SCORE = 55.0
+COMMISSION_RATE = 0.0003
+MIN_COMMISSION = 5.0
+STAMP_DUTY_RATE = 0.0005
+SLIPPAGE_RATE = 0.0005
+TAKE_PROFIT_PCT = 20.0
+TRAILING_TRIGGER_PCT = 10.0
+MAX_HOLDING_DAYS = 60
 # 新开仓仍优先看资金结构，但不再要求过于苛刻的完美合力。
 # 这能避免强势但分单不够漂亮的标的被全部挡掉。
 MIN_CAPITAL_COHESION_SCORE = 58.0
@@ -27,6 +34,9 @@ class Position:
     shares: int
     avg_cost: float
     last_price: float
+    entry_date: str = ""
+    highest_price: float = 0.0
+    holding_days: int = 0
 
     @property
     def market_value(self) -> float:
@@ -50,6 +60,9 @@ class PaperState:
     initial_capital: float
     cash: float
     positions: dict[str, Position]
+    pending_orders: list[dict[str, Any]]
+    peak_value: float
+    trading_halted: bool = False
 
     @property
     def position_value(self) -> float:
@@ -95,6 +108,7 @@ def run_paper_trading(
     quotes: list[StockQuote],
     initial_capital: float,
     klines_by_code: dict[str, list[KLine]] | None = None,
+    observation_picks: list[Recommendation] | None = None,
 ) -> Path:
     paper_dir = data_dir / "paper_trading"
     paper_dir.mkdir(parents=True, exist_ok=True)
@@ -105,18 +119,24 @@ def run_paper_trading(
     strategy_history_path = paper_dir / "strategy_history.json"
     timing_plan_path = paper_dir / f"timing_plan_{run_date}.json"
     timing_plan_history_path = paper_dir / "timing_plan_history.json"
+    signal_observations_path = paper_dir / "signal_observations.json"
+    signal_summary_path = paper_dir / "signal_summary.md"
     state = load_state(state_path, initial_capital)
     history = load_history(history_path)
     base_strategy = choose_strategy(history)
     quote_by_code = {quote.code: quote for quote in quotes}
     pick_by_code = {pick.code: pick for pick in picks}
-    update_position_prices(state, quote_by_code)
-
     market_note, market_profile = assess_market(quotes)
     strategy = adapt_strategy_for_market(base_strategy, market_profile)
+    update_signal_observations(signal_observations_path, run_date, quote_by_code, observation_picks or picks)
+    write_signal_summary(signal_summary_path, signal_observations_path)
     actions: list[dict[str, Any]] = []
-    actions.extend(apply_sell_rules(state, pick_by_code, strategy))
-    actions.extend(apply_buy_rules(state, picks, strategy, market_profile, klines_by_code or {}))
+    # 昨日收盘后产生的信号，只能在今天开盘后模拟成交。
+    actions.extend(execute_pending_orders(state, quote_by_code, run_date))
+    actions.extend(apply_sell_rules(state, pick_by_code, strategy, quote_by_code, run_date))
+    update_position_prices(state, quote_by_code, run_date)
+    update_account_risk(state)
+    actions.extend(create_pending_orders(state, picks, strategy, market_profile, klines_by_code or {}, run_date))
 
     timing_plans = build_timing_plans(state, picks, strategy, klines_by_code or {})
     save_state(state_path, state)
@@ -155,7 +175,13 @@ def generate_monthly_summary(data_dir: Path, month: str) -> Path:
 
 def load_state(path: Path, initial_capital: float) -> PaperState:
     if not path.exists():
-        return PaperState(initial_capital=initial_capital, cash=initial_capital, positions={})
+        return PaperState(
+            initial_capital=initial_capital,
+            cash=initial_capital,
+            positions={},
+            pending_orders=[],
+            peak_value=initial_capital,
+        )
     with path.open("r", encoding="utf-8") as fp:
         payload = json.load(fp)
     positions = {
@@ -165,6 +191,9 @@ def load_state(path: Path, initial_capital: float) -> PaperState:
             shares=int(item["shares"]),
             avg_cost=float(item["avg_cost"]),
             last_price=float(item.get("last_price") or item["avg_cost"]),
+            entry_date=str(item.get("entry_date") or ""),
+            highest_price=float(item.get("highest_price") or item.get("last_price") or item["avg_cost"]),
+            holding_days=int(item.get("holding_days") or 0),
         )
         for code, item in (payload.get("positions") or {}).items()
     }
@@ -172,6 +201,9 @@ def load_state(path: Path, initial_capital: float) -> PaperState:
         initial_capital=float(payload.get("initial_capital") or initial_capital),
         cash=float(payload.get("cash") or 0.0),
         positions=positions,
+        pending_orders=list(payload.get("pending_orders") or []),
+        peak_value=float(payload.get("peak_value") or payload.get("initial_capital") or initial_capital),
+        trading_halted=bool(payload.get("trading_halted", False)),
     )
 
 
@@ -185,9 +217,15 @@ def save_state(path: Path, state: PaperState) -> None:
                 "shares": position.shares,
                 "avg_cost": round(position.avg_cost, 4),
                 "last_price": round(position.last_price, 4),
+                "entry_date": position.entry_date,
+                "highest_price": round(position.highest_price, 4),
+                "holding_days": position.holding_days,
             }
             for code, position in state.positions.items()
         },
+        "pending_orders": state.pending_orders,
+        "peak_value": round(state.peak_value, 2),
+        "trading_halted": state.trading_halted,
     }
     with path.open("w", encoding="utf-8") as fp:
         json.dump(payload, fp, ensure_ascii=False, indent=2)
@@ -473,7 +511,7 @@ def choose_strategy(history: list[dict[str, Any]]) -> StrategyProfile:
             buy_score=MIN_BUY_SCORE,
             max_position_value=MAX_POSITION_VALUE,
             max_positions=MAX_POSITIONS,
-            stop_loss_pct=-8.0,
+            stop_loss_pct=-5.0,
             reason="历史样本少于3天，先使用默认保守参数。",
         )
     recent = history[-5:]
@@ -492,7 +530,7 @@ def choose_strategy(history: list[dict[str, Any]]) -> StrategyProfile:
             buy_score=65.0,
             max_position_value=6_000.0,
             max_positions=1,
-            stop_loss_pct=-6.0,
+            stop_loss_pct=-5.0,
             reason=f"近{len(recent)}次记录有 {loss_days} 天亏损，区间收益 {recent_return:+.2f}%，转为防守。",
         )
     win_days = sum(1 for value in daily_pcts if value > 0)
@@ -502,7 +540,7 @@ def choose_strategy(history: list[dict[str, Any]]) -> StrategyProfile:
             buy_score=52.0,
             max_position_value=10_000.0,
             max_positions=2,
-            stop_loss_pct=-8.0,
+            stop_loss_pct=-5.0,
             reason=f"近5次记录有 {win_days} 天盈利，区间收益 {recent_return:+.2f}%，允许正常偏积极。",
         )
     return StrategyProfile(
@@ -510,16 +548,91 @@ def choose_strategy(history: list[dict[str, Any]]) -> StrategyProfile:
         buy_score=MIN_BUY_SCORE,
         max_position_value=MAX_POSITION_VALUE,
         max_positions=MAX_POSITIONS,
-        stop_loss_pct=-8.0,
+        stop_loss_pct=-5.0,
         reason=f"近{len(recent)}次记录区间收益 {recent_return:+.2f}%，维持默认策略。",
     )
 
 
-def update_position_prices(state: PaperState, quote_by_code: dict[str, StockQuote]) -> None:
+def update_position_prices(
+    state: PaperState, quote_by_code: dict[str, StockQuote], run_date: str = ""
+) -> None:
     for position in state.positions.values():
         quote = quote_by_code.get(position.code)
         if quote and quote.price:
             position.last_price = quote.price
+            position.highest_price = max(position.highest_price or position.avg_cost, quote.high_price or quote.price)
+            if not run_date or position.entry_date != run_date:
+                position.holding_days += 1
+
+
+def commission(amount: float) -> float:
+    return max(MIN_COMMISSION, amount * COMMISSION_RATE)
+
+
+def buy_cost(amount: float) -> float:
+    return commission(amount)
+
+
+def sell_cost(amount: float) -> float:
+    return commission(amount) + amount * STAMP_DUTY_RATE
+
+
+def execute_pending_orders(
+    state: PaperState,
+    quote_by_code: dict[str, StockQuote],
+    run_date: str,
+) -> list[dict[str, Any]]:
+    actions: list[dict[str, Any]] = []
+    remaining: list[dict[str, Any]] = []
+    for order in state.pending_orders:
+        if str(order.get("signal_date") or "") >= run_date:
+            remaining.append(order)
+            continue
+        code = str(order.get("code") or "")
+        quote = quote_by_code.get(code)
+        open_price = quote.open_price if quote else None
+        previous_close = quote.previous_close if quote else None
+        if not quote or not open_price or open_price <= 0:
+            actions.append({"action": "CANCEL", "code": code, "name": order.get("name", ""), "shares": 0,
+                            "price": None, "amount": 0.0, "reason": "次日缺少有效开盘价，取消过期模拟订单。"})
+            continue
+        if previous_close and open_price >= previous_close * 1.095:
+            actions.append({"action": "CANCEL", "code": code, "name": order.get("name", ""), "shares": 0,
+                            "price": open_price, "amount": 0.0, "reason": "次日接近涨停开盘，按无法可靠成交处理。"})
+            continue
+        fill_price = open_price * (1 + SLIPPAGE_RATE)
+        budget = min(float(order.get("budget") or 0.0), state.cash)
+        shares = int((budget - MIN_COMMISSION) // (fill_price * LOT_SIZE)) * LOT_SIZE
+        if shares < LOT_SIZE:
+            actions.append({"action": "CANCEL", "code": code, "name": order.get("name", ""), "shares": 0,
+                            "price": fill_price, "amount": 0.0, "reason": "现金不足以支付一手股票及费用。"})
+            continue
+        amount = shares * fill_price
+        fee = buy_cost(amount)
+        if amount + fee > state.cash:
+            shares -= LOT_SIZE
+            amount = shares * fill_price
+            fee = buy_cost(amount) if shares else 0.0
+        if shares < LOT_SIZE:
+            continue
+        state.cash -= amount + fee
+        state.positions[code] = Position(
+            code=code, name=str(order.get("name") or code), shares=shares,
+            avg_cost=(amount + fee) / shares, last_price=quote.price or fill_price,
+            entry_date=run_date, highest_price=quote.high_price or quote.price or fill_price, holding_days=0,
+        )
+        actions.append({"action": "BUY", "code": code, "name": order.get("name", ""), "shares": shares,
+                        "price": fill_price, "amount": amount, "fee": fee,
+                        "signal_group": order.get("signal_group", ""),
+                        "reason": "执行上一交易日信号：按次日开盘价并计入滑点和佣金。"})
+    state.pending_orders = remaining
+    return actions
+
+
+def update_account_risk(state: PaperState) -> None:
+    state.peak_value = max(state.peak_value, state.total_value)
+    drawdown = (state.peak_value - state.total_value) / state.peak_value * 100 if state.peak_value else 0.0
+    state.trading_halted = state.trading_halted or drawdown >= 15.0
 
 
 def assess_market(quotes: list[StockQuote]) -> tuple[str, MarketProfile]:
@@ -603,30 +716,63 @@ def apply_sell_rules(
     state: PaperState,
     pick_by_code: dict[str, Recommendation],
     strategy: StrategyProfile,
+    quote_by_code: dict[str, StockQuote],
+    run_date: str,
 ) -> list[dict[str, Any]]:
     actions: list[dict[str, Any]] = []
     for code, position in list(state.positions.items()):
         pick = pick_by_code.get(code)
+        quote = quote_by_code.get(code)
+        if not quote:
+            continue
+        # A股股票当日买入不能当日卖出（T+1）。
+        if position.entry_date == run_date:
+            continue
         day_pct = pick.pct_chg if pick else None
         risk_penalty = pick.risk_penalty if pick else 0.0
         should_sell = False
         reason = ""
-        if position.pnl_pct <= strategy.stop_loss_pct:
+        hard_stop = position.avg_cost * 0.95
+        trailing_active = position.highest_price >= position.avg_cost * (1 + TRAILING_TRIGGER_PCT / 100)
+        stop_price = max(hard_stop, position.avg_cost) if trailing_active else hard_stop
+        take_profit_price = position.avg_cost * (1 + TAKE_PROFIT_PCT / 100)
+        fill_price: float | None = None
+        if quote.low_price is not None and quote.low_price <= stop_price:
             should_sell = True
-            reason = f"触发 {strategy.stop_loss_pct:.0f}% 模拟止损，当前浮亏 {position.pnl_pct:.2f}%。"
-        elif day_pct is not None and day_pct <= -7.0:
+            fill_price = min(quote.open_price or stop_price, stop_price) * (1 - SLIPPAGE_RATE)
+            reason = "触发成本-5%止损。" if not trailing_active else "盈利达到10%后回落，触发保本移动止损。"
+        elif quote.high_price is not None and quote.high_price >= take_profit_price:
+            should_sell = True
+            fill_price = max(quote.open_price or take_profit_price, take_profit_price) * (1 - SLIPPAGE_RATE)
+            reason = "触发+20%模拟止盈。"
+        elif position.holding_days >= MAX_HOLDING_DAYS:
+            should_sell = True
+            fill_price = (quote.price or position.last_price) * (1 - SLIPPAGE_RATE)
+            reason = f"持有达到{MAX_HOLDING_DAYS}个交易日，按期限退出。"
+        current_price = quote.price or position.last_price
+        current_pnl_pct = (current_price / position.avg_cost - 1) * 100 if position.avg_cost else 0.0
+        if not should_sell and current_pnl_pct <= -5.0:
+            should_sell = True
+            fill_price = (quote.price or position.last_price) * (1 - SLIPPAGE_RATE)
+            reason = f"收盘检查发现浮亏 {current_pnl_pct:.2f}%，执行风险退出。"
+        elif not should_sell and position.holding_days >= 10 and current_pnl_pct <= 0 and pick is None:
+            should_sell = True
+            reason = "持有满10个交易日仍未盈利，且已退出当日强信号候选，执行时间止损。"
+        elif not should_sell and day_pct is not None and day_pct <= -7.0:
             should_sell = True
             reason = f"当日跌幅 {day_pct:.2f}%，先退出等待重新企稳。"
-        elif risk_penalty >= 18.0:
+        elif not should_sell and risk_penalty >= 18.0:
             should_sell = True
             reason = f"风险扣分 {risk_penalty:.1f} 较高，降低事件风险暴露。"
-        elif position.pnl_pct >= 15.0 and day_pct is not None and day_pct < 0:
+        elif not should_sell and current_pnl_pct >= 15.0 and day_pct is not None and day_pct < 0:
             should_sell = True
-            reason = f"浮盈 {position.pnl_pct:.2f}% 后转弱，模拟止盈。"
+            reason = f"浮盈 {current_pnl_pct:.2f}% 后转弱，模拟止盈。"
         if not should_sell:
             continue
-        amount = position.shares * position.last_price
-        state.cash += amount
+        fill_price = fill_price or (quote.price or position.last_price) * (1 - SLIPPAGE_RATE)
+        amount = position.shares * fill_price
+        fee = sell_cost(amount)
+        state.cash += amount - fee
         del state.positions[code]
         actions.append(
             {
@@ -634,24 +780,31 @@ def apply_sell_rules(
                 "code": code,
                 "name": position.name,
                 "shares": position.shares,
-                "price": position.last_price,
+                "price": fill_price,
                 "amount": amount,
+                "fee": fee,
                 "reason": reason,
             }
         )
     return actions
 
 
-def apply_buy_rules(
+def create_pending_orders(
     state: PaperState,
     picks: list[Recommendation],
     strategy: StrategyProfile,
     market: MarketProfile,
     klines_by_code: dict[str, list[KLine]],
+    run_date: str,
 ) -> list[dict[str, Any]]:
     actions: list[dict[str, Any]] = []
+    if state.trading_halted:
+        return [{"action": "HALT", "code": "", "name": "", "shares": 0, "price": None, "amount": 0.0,
+                 "reason": "账户从历史峰值回撤达到15%，暂停创建新订单。"}]
+    drawdown = (state.peak_value - state.total_value) / state.peak_value * 100 if state.peak_value else 0.0
     for pick in picks:
-        if len(state.positions) >= strategy.max_positions:
+        reserved_codes = {str(item.get("code") or "") for item in state.pending_orders}
+        if len(state.positions) + len(reserved_codes) >= strategy.max_positions:
             break
         if pick.code in state.positions or pick.price is None:
             continue
@@ -670,6 +823,8 @@ def apply_buy_rules(
             )
             continue
         budget = min(strategy.max_position_value, state.cash * market.cash_fraction)
+        if drawdown >= 10.0:
+            budget = min(budget, 5_000.0)
         shares = int(budget // (pick.price * LOT_SIZE)) * LOT_SIZE
         if shares < LOT_SIZE:
             actions.append(
@@ -684,26 +839,25 @@ def apply_buy_rules(
                 }
             )
             continue
-        amount = shares * pick.price
-        state.cash -= amount
-        state.positions[pick.code] = Position(
-            code=pick.code,
-            name=pick.name,
-            shares=shares,
-            avg_cost=pick.price,
-            last_price=pick.price,
-        )
+        signal_group = classify_signal_group(pick)
+        state.pending_orders = [item for item in state.pending_orders if item.get("code") != pick.code]
+        state.pending_orders.append({
+            "signal_date": run_date, "code": pick.code, "name": pick.name,
+            "budget": round(budget, 2), "signal_price": pick.price,
+            "score": pick.score, "signal_group": signal_group,
+        })
         actions.append(
             {
-                "action": "BUY",
+                "action": "ORDER",
                 "code": pick.code,
                 "name": pick.name,
                 "shares": shares,
                 "price": pick.price,
-                "amount": amount,
+                "amount": budget,
+                "signal_group": signal_group,
                 "reason": (
                     f"资金合力 {pick.capital_cohesion_score:.1f} 已确认，"
-                    f"趋势、风险过滤均通过，按 {strategy.mode} 模式模拟买入。"
+                    f"趋势、风险过滤均通过；仅创建订单，下一交易日再模拟成交。"
                 ),
             }
         )
@@ -722,6 +876,86 @@ def apply_buy_rules(
     return actions
 
 
+def update_signal_observations(
+    path: Path,
+    run_date: str,
+    quote_by_code: dict[str, StockQuote],
+    picks: list[Recommendation],
+) -> None:
+    """前向记录信号效果；只使用信号产生后真实出现的后续收盘价。"""
+    rows = load_history(path)
+    horizons = {1, 3, 5, 10, 20}
+    for row in rows:
+        if row.get("signal_date") == run_date:
+            continue
+        quote = quote_by_code.get(str(row.get("code") or ""))
+        if not quote or not quote.price:
+            continue
+        seen_dates = list(row.get("seen_dates") or [])
+        if run_date in seen_dates:
+            continue
+        seen_dates.append(run_date)
+        row["seen_dates"] = seen_dates
+        day_number = len(seen_dates)
+        if day_number in horizons:
+            signal_price = float(row.get("signal_price") or 0.0)
+            if signal_price:
+                row[f"t{day_number}_close"] = quote.price
+                row[f"t{day_number}_return_pct"] = round((quote.price / signal_price - 1) * 100, 4)
+            if day_number == 1 and quote.open_price:
+                row["t1_open"] = quote.open_price
+                row["t1_intraday_return_pct"] = round((quote.price / quote.open_price - 1) * 100, 4)
+    existing = {(str(row.get("signal_date")), str(row.get("code"))) for row in rows}
+    for pick in picks:
+        key = (run_date, pick.code)
+        if key in existing or pick.price is None:
+            continue
+        rows.append({
+            "signal_date": run_date,
+            "code": pick.code,
+            "name": pick.name,
+            "signal_group": classify_signal_group(pick),
+            "signal_price": pick.price,
+            "score": round(pick.score, 4),
+            "capital_cohesion_score": round(pick.capital_cohesion_score, 4),
+            "seen_dates": [],
+        })
+    rows.sort(key=lambda item: (str(item.get("signal_date", "")), str(item.get("code", ""))))
+    with path.open("w", encoding="utf-8") as fp:
+        json.dump(rows, fp, ensure_ascii=False, indent=2)
+
+
+def write_signal_summary(path: Path, observations_path: Path) -> None:
+    rows = load_history(observations_path)
+    lines = ["# A/B/C 信号前向统计", "", "只统计信号产生后实际出现的行情，不回填历史资金流。", "",
+             "| 分组 | 累计信号 | 完成T+1样本 | 次日上涨率 | T+1日内平均收益 | 信号后T+1平均收益 |",
+             "| --- | ---: | ---: | ---: | ---: | ---: |"]
+    for group in ("A", "B", "C"):
+        group_rows = [row for row in rows if row.get("signal_group") == group]
+        completed = [row for row in group_rows if "t1_return_pct" in row]
+        intraday = [float(row["t1_intraday_return_pct"]) for row in completed if "t1_intraday_return_pct" in row]
+        signal_returns = [float(row["t1_return_pct"]) for row in completed]
+        wins = sum(1 for value in intraday if value > 0)
+        win_rate = wins / len(intraday) * 100 if intraday else 0.0
+        avg_intraday = sum(intraday) / len(intraday) if intraday else 0.0
+        avg_signal = sum(signal_returns) / len(signal_returns) if signal_returns else 0.0
+        lines.append(
+            f"| {group} | {len(group_rows)} | {len(completed)} | {win_rate:.1f}% | "
+            f"{avg_intraday:+.2f}% | {avg_signal:+.2f}% |"
+        )
+    lines.extend(["", "A=超大单+大单；B=超大单+中单；C=无上述合力的观察组，C组不下单。", ""])
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def classify_signal_group(pick: Recommendation) -> str:
+    reasons = " ".join(pick.reasons)
+    if "超大单、大单、中单同步" in reasons or "超大单与大单" in reasons:
+        return "A"
+    if "超大单与中单" in reasons:
+        return "B"
+    return "C"
+
+
 def buy_filter_reason(
     pick: Recommendation,
     strategy: StrategyProfile,
@@ -737,6 +971,8 @@ def buy_filter_reason(
             f"资金合力分 {pick.capital_cohesion_score:.1f} 低于"
             f"开仓下限 {MIN_CAPITAL_COHESION_SCORE:.0f}。"
         )
+    if pick.score < strategy.buy_score:
+        return False, f"综合分 {pick.score:.1f} 低于当前开仓线 {strategy.buy_score:.1f}。"
     # 总分现在只承担候选排序作用：资金合力通过后，不再让新闻或换手等次要项
     # 反向否决开仓；仍保留趋势、风险和追涨限制。
     if pick.trend_score < 48.0:
@@ -817,14 +1053,9 @@ def build_buy_timing_plan(
         buy_low = max(buy_low, max(support_candidates) * 0.995)
     buy_high = price * 1.01
     confirm = max(price * 1.015, (ma5 or price) * 1.005)
-    stop = min(price * 0.94, (ma20 or price) * 0.985)
-    if low20 is not None:
-        stop = min(stop, low20 * 0.985)
-    target1 = price * 1.04
-    target2 = price * 1.08
-    if high20 is not None and high20 > price:
-        target1 = min(target1, high20)
-        target2 = max(target1, high20 * 1.03)
+    stop = price * 0.95
+    target1 = price * 1.10
+    target2 = price * 1.20
     decision = "PLAN_BUY" if valid else "WAIT"
     reason_parts = [
         filter_reason,
@@ -858,16 +1089,16 @@ def build_position_timing_plan(
     ma10 = moving_average(klines, 10)
     ma20 = moving_average(klines, 20)
     low20, high20 = recent_range(klines, 20)
-    stop_by_cost = position.avg_cost * (1 + strategy.stop_loss_pct / 100)
+    stop_by_cost = position.avg_cost * 0.95
     stop_by_trend = (ma20 * 0.985) if ma20 else position.last_price * 0.94
     stop = max(stop_by_cost, stop_by_trend)
     reduce_price = position.last_price * 1.05
     if high20 and high20 > position.last_price:
         reduce_price = min(reduce_price, high20)
-    target = max(position.avg_cost * 1.12, position.last_price * 1.08)
+    target = position.avg_cost * 1.20
     reason_parts = [
         f"成本 {position.avg_cost:.2f}，当前浮动收益 {position.pnl_pct:+.2f}%。",
-        f"止损同时参考成本止损和 MA20 趋势线，取 {stop:.2f}。",
+        f"硬止损为成本-5%；盈利达到10%后保护线提升到成本附近，当前参考 {stop:.2f}。",
     ]
     if ma5 and ma10 and ma20:
         reason_parts.append(f"均线参考：MA5 {ma5:.2f}，MA10 {ma10:.2f}，MA20 {ma20:.2f}。")
@@ -919,6 +1150,7 @@ def write_daily_report(
     strategy: StrategyProfile,
     timing_plans: list[dict[str, Any]],
 ) -> None:
+    drawdown = (state.peak_value - state.total_value) / state.peak_value * 100 if state.peak_value else 0.0
     lines = [
         f"# 模拟投资日报 {run_date}",
         "",
@@ -931,6 +1163,9 @@ def write_daily_report(
         f"- 持仓市值：{state.position_value:.2f}",
         f"- 总资产：{state.total_value:.2f}",
         f"- 累计收益：{state.total_pnl:+.2f} ({state.total_pnl_pct:+.2f}%)",
+        f"- 历史峰值回撤：{drawdown:.2f}%",
+        f"- 待执行订单：{len(state.pending_orders)} 个",
+        f"- 新开仓状态：{'已熔断' if state.trading_halted else '允许'}",
         "",
         "## 市场判断",
         "",
@@ -939,10 +1174,10 @@ def write_daily_report(
         "## 当前策略",
         "",
         f"- 模式：{strategy.mode}",
-        f"- 综合分参考线：{strategy.buy_score:.0f}（仅用于排序，不作为开仓否决条件）",
+        f"- 综合分开仓线：{strategy.buy_score:.0f}（已参与开仓过滤）",
         f"- 单票上限：{strategy.max_position_value:.2f}",
         f"- 最大持仓数：{strategy.max_positions}",
-        f"- 止损线：{strategy.stop_loss_pct:.0f}%",
+        "- 个股规则：-5%止损，+20%止盈，盈利达到10%后启用保本保护",
         f"- 调整原因：{strategy.reason}",
         "",
         "## 今日操作",
@@ -951,7 +1186,7 @@ def write_daily_report(
     for action in actions:
         if action["action"] in {"BUY", "SELL"}:
             lines.append(
-                "- {action} {code} {name} {shares} 股，价格 {price:.2f}，金额 {amount:.2f}。{reason}".format(
+                "- {action} {code} {name} {shares} 股，价格 {price:.2f}，金额 {amount:.2f}，费用 {fee:.2f}。{reason}".format(
                     **action
                 )
             )

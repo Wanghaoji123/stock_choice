@@ -5,3 +5,6 @@ __pycache__/
 data/*.sqlite3
 data/*.sqlite3-*
 data/recommendations_*.csv
+data/daily-run.lock
+data/logs/
+data/alerts/

@@ -1,0 +1,12 @@
+[Unit]
+Description=Run stock_choice paper trading after A-share market close
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/wanghaoji/stock_choice
+ExecStart=/usr/bin/bash /home/wanghaoji/stock_choice/scripts/run_daily.sh
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,132 @@
+[
+  {
+    "signal_date": "2026-08-27",
+    "code": "000997",
+    "name": "新 大 陆",
+    "signal_group": "C",
+    "signal_price": 20.88,
+    "score": 58.22,
+    "capital_cohesion_score": 35.0,
+    "seen_dates": []
+  },
+  {
+    "signal_date": "2026-08-27",
+    "code": "002041",
+    "name": "登海种业",
+    "signal_group": "C",
+    "signal_price": 11.23,
+    "score": 58.22,
+    "capital_cohesion_score": 35.0,
+    "seen_dates": []
+  },
+  {
+    "signal_date": "2026-08-27",
+    "code": "002078",
+    "name": "太阳纸业",
+    "signal_group": "C",
+    "signal_price": 14.89,
+    "score": 56.78,
+    "capital_cohesion_score": 35.0,
+    "seen_dates": []
+  },
+  {
+    "signal_date": "2026-08-27",
+    "code": "002445",
+    "name": "中南文化",
+    "signal_group": "C",
+    "signal_price": 3.67,
+    "score": 55.98,
+    "capital_cohesion_score": 35.0,
+    "seen_dates": []
+  },
+  {
+    "signal_date": "2026-08-27",
+    "code": "300122",
+    "name": "智飞生物",
+    "signal_group": "C",
+    "signal_price": 15.0,
+    "score": 58.22,
+    "capital_cohesion_score": 35.0,
+    "seen_dates": []
+  },
+  {
+    "signal_date": "2026-08-27",
+    "code": "300142",
+    "name": "沃森生物",
+    "signal_group": "C",
+    "signal_price": 15.58,
+    "score": 57.74,
+    "capital_cohesion_score": 35.0,
+    "seen_dates": []
+  },
+  {
+    "signal_date": "2026-08-27",
+    "code": "600313",
+    "name": "农发种业",
+    "signal_group": "C",
+    "signal_price": 7.23,
+    "score": 56.78,
+    "capital_cohesion_score": 35.0,
+    "seen_dates": []
+  },
+  {
+    "signal_date": "2026-08-27",
+    "code": "600864",
+    "name": "哈投股份",
+    "signal_group": "C",
+    "signal_price": 5.86,
+    "score": 55.98,
+    "capital_cohesion_score": 35.0,
+    "seen_dates": []
+  },
+  {
+    "signal_date": "2026-08-27",
+    "code": "601118",
+    "name": "海南橡胶",
+    "signal_group": "C",
+    "signal_price": 6.49,
+    "score": 56.24,
+    "capital_cohesion_score": 35.0,
+    "seen_dates": []
+  },
+  {
+    "signal_date": "2026-08-27",
+    "code": "601700",
+    "name": "风范股份",
+    "signal_group": "C",
+    "signal_price": 7.62,
+    "score": 55.98,
+    "capital_cohesion_score": 35.0,
+    "seen_dates": []
+  },
+  {
+    "signal_date": "2026-08-28",
+    "code": "300876",
+    "name": "蒙泰高新",
+    "signal_group": "A",
+    "signal_price": 16.61,
+    "score": 85.68,
+    "capital_cohesion_score": 90.0,
+    "seen_dates": []
+  },
+  {
+    "signal_date": "2026-08-28",
+    "code": "600217",
+    "name": "中再资环",
+    "signal_group": "A",
+    "signal_price": 3.4,
+    "score": 85.68,
+    "capital_cohesion_score": 90.0,
+    "seen_dates": []
+  },
+  {
+    "signal_date": "2026-08-28",
+    "code": "603172",
+    "name": "万丰股份",
+    "signal_group": "A",
+    "signal_price": 19.5,
+    "score": 86.88,
+    "capital_cohesion_score": 90.0,
+    "seen_dates": []
+  }
+]

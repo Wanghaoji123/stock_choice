@@ -4,6 +4,7 @@ import json
 import re
 import subprocess
 import time
+import concurrent.futures
 from html import unescape
 from http.client import HTTPException
 from datetime import date, datetime, timedelta
@@ -51,6 +52,93 @@ def build_url(url: str, params: dict[str, object]) -> str:
 class EastMoneyClient:
     def __init__(self, settings: Settings):
         self.settings = settings
+        self.bulk_capital_flows: dict[str, CapitalFlow] = {}
+        self.capital_flow_stats = {
+            "requests": 0,
+            "success": 0,
+            "empty": 0,
+            "error": 0,
+            "stale": 0,
+        }
+
+    def _fetch_qq_capital_flow(self, code: str) -> CapitalFlow | None:
+        symbol = f"{'sh' if code.startswith(('5', '6', '9')) else 'sz'}{code}"
+        url = (
+            "https://proxy.finance.qq.com/cgi/cgi-bin/fundflow/hsfundtab"
+            f"?code={symbol}&type=todayFundFlow&klineNeedDay=1"
+        )
+        try:
+            result = subprocess.run(
+                [
+                    "curl", "-L", "--compressed", "--silent", "--show-error",
+                    "--max-time", str(int(self.settings.qq_fundflow_request_timeout)),
+                    "-H", "Referer: https://gu.qq.com/", url,
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=self.settings.qq_fundflow_request_timeout + 2,
+            )
+            payload = json.loads(result.stdout)
+            row = (payload.get("data") or {}).get("todayFundFlow") or {}
+            main = int(row["mainNetIn"])
+            extra_large = int(row["superFlow"])
+            large = int(row["bigFlow"])
+            medium = int(row["normalFlow"])
+            small = int(row["smallFlow"])
+            if abs(main - extra_large - large) > 2:
+                return None
+            return CapitalFlow(
+                code=code,
+                fetched_at=datetime.now(),
+                main_net=float(main),
+                small_net=float(small),
+                medium_net=float(medium),
+                large_net=float(large),
+                extra_large_net=float(extra_large),
+            )
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError, OSError, subprocess.SubprocessError):
+            return None
+
+    def fetch_qq_capital_flows(self, codes: list[str]) -> dict[str, CapitalFlow]:
+        """并发拉取腾讯当日四档资金流，整批超时或覆盖率不足时失败。"""
+        unique_codes = list(dict.fromkeys(codes))
+        print(
+            f"正在通过腾讯财经拉取 {len(unique_codes)} 只股票的当日资金流"
+            f"（{self.settings.qq_fundflow_workers}并发，整批硬超时"
+            f" {self.settings.qq_fundflow_batch_timeout:.0f} 秒）..."
+        )
+        started = time.monotonic()
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=self.settings.qq_fundflow_workers)
+        futures = {executor.submit(self._fetch_qq_capital_flow, code): code for code in unique_codes}
+        flows: dict[str, CapitalFlow] = {}
+        timed_out = False
+        try:
+            for future in concurrent.futures.as_completed(
+                futures, timeout=self.settings.qq_fundflow_batch_timeout
+            ):
+                flow = future.result()
+                if flow is not None:
+                    flows[flow.code] = flow
+        except TimeoutError:
+            timed_out = True
+        finally:
+            for future in futures:
+                future.cancel()
+            executor.shutdown(wait=not timed_out, cancel_futures=True)
+        elapsed = time.monotonic() - started
+        coverage = len(flows) / len(unique_codes) if unique_codes else 0.0
+        print(f"腾讯资金流：成功 {len(flows)}/{len(unique_codes)} ({coverage:.1%})，耗时 {elapsed:.1f} 秒。")
+        if timed_out:
+            raise RuntimeError(
+                f"腾讯资金流整批超过 {self.settings.qq_fundflow_batch_timeout:.0f} 秒，任务已停止"
+            )
+        if len(unique_codes) >= 20 and coverage < 0.8:
+            raise RuntimeError(f"腾讯资金流成功率仅 {coverage:.1%}，低于80%，任务已停止")
+        self.bulk_capital_flows = flows
+        return flows
 
     def _get_json(self, url: str, params: dict[str, object]) -> dict:
         full_url = build_url(url, params)
@@ -111,21 +199,10 @@ class EastMoneyClient:
         return result.stdout
 
     def fetch_a_share_quotes(self) -> list[StockQuote]:
-        try:
-            quotes = self._fetch_eastmoney_a_share_quotes()
-            if quotes:
-                return quotes
-        except Exception as exc:
-            if self.settings.debug_urls:
-                print(f"  东方财富全市场行情失败，切换新浪行情中心: {exc}")
+        """全市场行情固定走新浪，避免先等待不可用的东方财富接口。"""
         return self._fetch_sina_a_share_quotes()
 
     def fetch_quote(self, code: str, name: str | None = None) -> StockQuote | None:
-        try:
-            return self._fetch_eastmoney_quote(code, name)
-        except Exception as exc:
-            if self.settings.debug_urls:
-                print(f"  东方财富实时行情失败，切换新浪实时行情: {exc}")
         return self._fetch_sina_quote(code, name)
 
     def _quote_from_eastmoney_item(
@@ -139,6 +216,23 @@ class EastMoneyClient:
         name = str(item.get("f14") or fallback_name or code)
         if not code or self._excluded(code, name):
             return None
+        flow_values = {
+            "main_net": _to_float(item.get("f62")),
+            "extra_large_net": _to_float(item.get("f66")),
+            "large_net": _to_float(item.get("f72")),
+            "medium_net": _to_float(item.get("f78")),
+            "small_net": _to_float(item.get("f84")),
+        }
+        if all(value is not None for value in flow_values.values()):
+            self.bulk_capital_flows[code] = CapitalFlow(
+                code=code,
+                fetched_at=fetched_at,
+                main_net=flow_values["main_net"],
+                small_net=flow_values["small_net"],
+                medium_net=flow_values["medium_net"],
+                large_net=flow_values["large_net"],
+                extra_large_net=flow_values["extra_large_net"],
+            )
         return StockQuote(
             code=code,
             name=name,
@@ -161,7 +255,7 @@ class EastMoneyClient:
             "https://push2.eastmoney.com/api/qt/stock/get",
             {
                 "secid": eastmoney_secid(code),
-                "fields": "f12,f14,f2,f3,f5,f6,f8,f15,f16,f17,f18,f20",
+                "fields": "f12,f14,f2,f3,f5,f6,f8,f15,f16,f17,f18,f20,f62,f66,f72,f78,f84",
                 "fltt": 2,
                 "invt": 2,
             },
@@ -208,7 +302,7 @@ class EastMoneyClient:
         )
 
     def _fetch_eastmoney_a_share_quotes(self) -> list[StockQuote]:
-        fields = "f12,f14,f2,f3,f5,f6,f8,f15,f16,f17,f18,f20"
+        fields = "f12,f14,f2,f3,f5,f6,f8,f15,f16,f17,f18,f20,f62,f66,f72,f78,f84"
         fs = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23"
         quotes: list[StockQuote] = []
         fetched_at = datetime.now()
@@ -239,13 +333,15 @@ class EastMoneyClient:
     def _fetch_sina_a_share_quotes(self) -> list[StockQuote]:
         quotes: list[StockQuote] = []
         fetched_at = datetime.now()
-        pages = max(1, (self.settings.max_candidates + self.settings.page_size - 1) // self.settings.page_size)
-        for page in range(1, pages + 1):
+        page_size = 100
+        pages = max(1, (self.settings.max_candidates + page_size - 1) // page_size)
+
+        def fetch_page(page: int) -> list[dict]:
             url = build_url(
                 "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData",
                 {
                     "page": page,
-                    "num": self.settings.page_size,
+                    "num": page_size,
                     "sort": "amount",
                     "asc": 0,
                     "node": "hs_a",
@@ -255,13 +351,44 @@ class EastMoneyClient:
             )
             if self.settings.debug_urls:
                 print(f"  GET {url}")
-            raw = self._fetch_text(
-                url,
-                referer="https://finance.sina.com.cn/",
+            result = subprocess.run(
+                [
+                    "curl", "-L", "--compressed", "--silent", "--show-error",
+                    "--max-time", str(int(self.settings.request_timeout)),
+                    "-H", "Referer: https://finance.sina.com.cn/", url,
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=self.settings.request_timeout + 2,
             )
-            rows = json.loads(raw)
+            rows = json.loads(result.stdout)
             if not isinstance(rows, list):
-                continue
+                return []
+            return rows
+
+        print(f"新浪行情并发拉取 {pages} 页（单页硬超时 {self.settings.request_timeout:.0f} 秒）...")
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=min(12, pages))
+        future_pages = {executor.submit(fetch_page, page): page for page in range(1, pages + 1)}
+        page_rows: dict[int, list[dict]] = {}
+        try:
+            for future in concurrent.futures.as_completed(future_pages, timeout=30):
+                page = future_pages[future]
+                try:
+                    page_rows[page] = future.result()
+                except Exception:
+                    page_rows[page] = []
+        except TimeoutError:
+            pass
+        finally:
+            for future in future_pages:
+                future.cancel()
+            executor.shutdown(wait=False, cancel_futures=True)
+
+        for page in sorted(page_rows):
+            rows = page_rows[page]
             for item in rows:
                 code = str(item.get("code") or "")
                 name = str(item.get("name") or "")
@@ -288,39 +415,59 @@ class EastMoneyClient:
                 )
                 if len(quotes) >= self.settings.max_candidates:
                     return quotes
-            time.sleep(0.15)
+        if len(quotes) < min(20, self.settings.max_candidates):
+            raise RuntimeError(f"新浪全市场行情仅返回 {len(quotes)} 只，任务已停止")
         return quotes[: self.settings.max_candidates]
 
     def fetch_capital_flow(self, code: str) -> CapitalFlow | None:
         """获取当日超大/大/中/小单净流入。接口无盘中数据时返回 None。"""
+        self.capital_flow_stats["requests"] += 1
         try:
             payload = self._get_json(
-                "https://push2.eastmoney.com/api/qt/stock/fflow/get",
+                "https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get",
                 {
                     "secid": eastmoney_secid(code),
-                    "klt": 1,
-                    "lmt": 0,
+                    "klt": 101,
+                    "lmt": 1,
                     "fields1": "f1,f2,f3,f7",
                     "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
                 },
             )
         except Exception:
+            self.capital_flow_stats["error"] += 1
             return None
         rows = (payload.get("data") or {}).get("klines") or []
         if not rows:
+            self.capital_flow_stats["empty"] += 1
             return None
         parts = str(rows[-1]).split(",")
         if len(parts) < 6:
+            self.capital_flow_stats["error"] += 1
             return None
-        return CapitalFlow(
+        try:
+            flow_date = datetime.strptime(parts[0], "%Y-%m-%d").date()
+        except ValueError:
+            self.capital_flow_stats["error"] += 1
+            return None
+        if flow_date != date.today():
+            self.capital_flow_stats["stale"] += 1
+            return None
+        values = [_to_float(value) for value in parts[1:6]]
+        if any(value is None for value in values):
+            self.capital_flow_stats["error"] += 1
+            return None
+        self.capital_flow_stats["success"] += 1
+        flow = CapitalFlow(
             code=code,
             fetched_at=datetime.now(),
-            main_net=_to_float(parts[1]),
-            small_net=_to_float(parts[2]),
-            medium_net=_to_float(parts[3]),
-            large_net=_to_float(parts[4]),
-            extra_large_net=_to_float(parts[5]),
+            main_net=values[0],
+            small_net=values[1],
+            medium_net=values[2],
+            large_net=values[3],
+            extra_large_net=values[4],
         )
+        self.bulk_capital_flows[code] = flow
+        return flow
 
     def fetch_intraday_trends(self, code: str) -> list[IntradayPoint]:
         """获取分时价格、均价和成交，用于识别冲高滞涨与回落。"""
@@ -366,10 +513,7 @@ class EastMoneyClient:
         return any(token.upper() in upper_name for token in self.settings.excluded_name_tokens)
 
     def fetch_kline(self, code: str) -> list[KLine]:
-        try:
-            return self._fetch_eastmoney_kline(code)
-        except RuntimeError:
-            return self._fetch_sina_kline(code)
+        return self._fetch_sina_kline(code)
 
     def _fetch_eastmoney_kline(self, code: str) -> list[KLine]:
         end = date.today()

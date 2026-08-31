@@ -1,10 +1,10 @@
 {
-  "run_date": "2026-08-04",
+  "run_date": "2026-08-28",
   "mode": "normal-strong",
   "buy_score": 55.0,
   "max_position_value": 10000.0,
   "max_positions": 2,
-  "stop_loss_pct": -8.0,
-  "reason": "近5次记录区间收益 -0.32%，维持默认策略。 强势日只提高确认要求，不放松追高。",
-  "updated_at": "2026-08-04T21:36:02"
+  "stop_loss_pct": -5.0,
+  "reason": "近5次记录区间收益 -0.51%，维持默认策略。 强势日只提高确认要求，不放松追高。",
+  "updated_at": "2026-08-28T21:13:43"
 }

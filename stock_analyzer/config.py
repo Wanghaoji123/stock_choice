@@ -13,9 +13,13 @@ class Settings:
     data_dir: Path = DATA_DIR
     db_path: Path = DATA_DIR / "stock_analysis.sqlite3"
     request_timeout: float = 12.0
+    qq_fundflow_request_timeout: float = 8.0
+    qq_fundflow_batch_timeout: float = 120.0
+    qq_fundflow_workers: int = 30
     page_size: int = 80
     max_candidates: int = 120
     news_candidates: int = 80
+    structure_candidates: int = 240
     news_per_stock: int = 8
     kline_days: int = 365
     top_n: int = 3
@@ -25,7 +29,7 @@ class Settings:
     paper_trade: bool = False
     paper_capital: float = 20_000.0
     codes: tuple[str, ...] = ()
-    excluded_prefixes: tuple[str, ...] = ("8", "4", "688", "689")
+    excluded_prefixes: tuple[str, ...] = ("8", "4", "92", "688", "689")
     excluded_name_tokens: tuple[str, ...] = ("ST", "*ST", "退")
     headers: dict[str, str] = field(
         default_factory=lambda: {

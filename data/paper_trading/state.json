@@ -1,5 +1,27 @@
 {
   "initial_capital": 20000.0,
   "cash": 18901.0,
-  "positions": {}
+  "positions": {},
+  "pending_orders": [
+    {
+      "signal_date": "2026-08-28",
+      "code": "603172",
+      "name": "万丰股份",
+      "budget": 10000.0,
+      "signal_price": 19.5,
+      "score": 86.88,
+      "signal_group": "A"
+    },
+    {
+      "signal_date": "2026-08-28",
+      "code": "600217",
+      "name": "中再资环",
+      "budget": 10000.0,
+      "signal_price": 3.4,
+      "score": 85.67999999999999,
+      "signal_group": "A"
+    }
+  ],
+  "peak_value": 20000.0,
+  "trading_halted": false
 }

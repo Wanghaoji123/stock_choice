@@ -298,9 +298,9 @@ def build_recommendations(
             f"成交额相对60日均额 {((quote.amount or latest.amount) / amount_baseline):.2f} 倍"
             if amount_baseline > 0
             else "成交额基准不足",
+            *cohesion_reasons,
             *trend_reasons,
             *liquidity_reasons,
-            *cohesion_reasons,
             *news_reasons,
             *risk_reasons,
         ]

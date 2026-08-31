@@ -22,7 +22,10 @@ def run_once(settings: Settings) -> int:
     try:
         if settings.codes:
             quotes, klines_by_code, news_by_code = fetch_explicit_codes(client, storage, settings)
-            flows_by_code, intraday_by_code = fetch_market_structure(client, quotes)
+            flows_by_code, intraday_by_code = fetch_market_structure(
+                client, quotes, allow_individual_fallback=True
+            )
+            storage.save_capital_flows(datetime.now().strftime("%Y-%m-%d"), flows_by_code.values())
             picks = build_recommendations(
                 quotes,
                 klines_by_code,
@@ -32,10 +35,13 @@ def run_once(settings: Settings) -> int:
                 intraday_by_code,
                 require_capital_cohesion=not settings.allow_missing_capital_flow,
             )
+            observation_picks = build_observation_candidates(
+                picks, quotes, klines_by_code, news_by_code, flows_by_code, intraday_by_code
+            )
             run_date = datetime.now().strftime("%Y-%m-%d")
             storage.save_recommendations(run_date, picks)
             write_report(settings.data_dir / f"recommendations_{run_date}.csv", picks)
-            if settings.paper_trade:
+            if settings.paper_trade and market_data_is_current(klines_by_code, run_date):
                 paper_path = run_paper_trading(
                     settings.data_dir,
                     run_date,
@@ -43,8 +49,11 @@ def run_once(settings: Settings) -> int:
                     quotes,
                     settings.paper_capital,
                     klines_by_code,
+                    observation_picks,
                 )
                 print(f"模拟投资日报已保存: {paper_path}")
+            elif settings.paper_trade:
+                print("模拟盘未运行：K线最后交易日不是今天，可能尚未收盘或今天不是交易日。")
             print_report(picks)
             print(f"\n报告已保存: {settings.data_dir / f'recommendations_{run_date}.csv'}")
             print("提示：这是量化和新闻情绪筛选结果，不构成投资建议；买卖前请人工复核公告、财报和风险。")
@@ -57,6 +66,15 @@ def run_once(settings: Settings) -> int:
             print("正在拉取 A 股行情...")
             quotes = client.fetch_a_share_quotes()
         storage.save_quotes(quotes)
+
+        if not settings.use_sample_data:
+            client.fetch_qq_capital_flows([quote.code for quote in quotes])
+            quote_codes = {quote.code for quote in quotes}
+            coverage = len(quote_codes & client.bulk_capital_flows.keys()) / len(quotes) if quotes else 0.0
+            if coverage < 0.5:
+                raise RuntimeError(f"腾讯资金流与行情匹配率仅 {coverage:.1%}，任务已停止")
+            quotes = preselect_structure_quotes(quotes, client.bulk_capital_flows, settings.structure_candidates)
+            print(f"资金流预筛完成：只对 {len(quotes)} 只候选抓取K线，不再逐只扫描全市场。")
 
         klines_by_code: dict[str, list[KLine]] = {}
         news_by_code: dict[str, list[NewsItem]] = {}
@@ -76,18 +94,53 @@ def run_once(settings: Settings) -> int:
             if settings.use_sample_data:
                 news_by_code[quote.code] = news
                 storage.save_news(news)
-            time.sleep(0.2)
+            time.sleep(0.03)
 
         if not settings.use_sample_data:
+            run_date = datetime.now().strftime("%Y-%m-%d")
+            if not market_data_is_current(klines_by_code, run_date):
+                raise RuntimeError("K线最后交易日不是今天，无法确认腾讯资金流属于今天，任务已停止")
             shortlist_size = min(len(quotes), max(settings.top_n, settings.news_candidates))
             print(f"第一阶段完成：已对 {len(klines_by_code)} 只股票做资金/趋势/流动性初筛。")
             print(f"第二阶段：对初筛前 {shortlist_size} 只抓取消息面，再输出最终 {settings.top_n} 只。")
             quote_by_code = {quote.code: quote for quote in quotes}
-            # 资金合力是第一决策条件，不能先用旧综合分裁掉标的再去看盘口。
-            # 因此对本轮全部初筛样本获取分单资金；之后才按合力优先缩小消息面范围。
-            structure_quotes = quotes
+            bulk_coverage = len(client.bulk_capital_flows) / len(quotes) if quotes else 0.0
+            if bulk_coverage >= 0.5:
+                # 东方财富行情批量返回了分单资金，可以直接覆盖全市场。
+                structure_quotes = quotes
+                allow_individual_fallback = False
+                print(f"全市场批量资金流覆盖率 {bulk_coverage:.1%}，直接进行资金合力复核。")
+            else:
+                # 行情已切到新浪等备用源时没有分单字段：先用量价趋势预筛，
+                # 再对少量股票逐只获取资金流，避免请求4000多次触发限流。
+                prefilter_size = min(len(quotes), max(60, settings.news_candidates))
+                prefiltered = build_recommendations(
+                    quotes,
+                    klines_by_code,
+                    {},
+                    prefilter_size,
+                    {},
+                    {},
+                    require_capital_cohesion=False,
+                )
+                quote_by_code = {quote.code: quote for quote in quotes}
+                structure_quotes = [quote_by_code[item.code] for item in prefiltered]
+                allow_individual_fallback = True
+                print(
+                    f"批量资金流覆盖率仅 {bulk_coverage:.1%}，"
+                    f"先按量价趋势预筛 {len(structure_quotes)} 只，再逐只复核资金流。"
+                )
             print(f"资金合力复核：对全部 {len(structure_quotes)} 只初筛样本抓取分单资金与分时结构。")
-            flows_by_code, intraday_by_code = fetch_market_structure(client, structure_quotes)
+            flows_by_code, intraday_by_code = fetch_market_structure(
+                client,
+                structure_quotes,
+                allow_individual_fallback=allow_individual_fallback,
+            )
+            # 腾讯已批量取得全市场数据，全部落库用于后续前向统计；
+            # flows_by_code 只是进入本轮精细复核的子集。
+            storage.save_capital_flows(
+                datetime.now().strftime("%Y-%m-%d"), client.bulk_capital_flows.values()
+            )
             preliminary = build_recommendations(
                 structure_quotes,
                 klines_by_code,
@@ -121,10 +174,13 @@ def run_once(settings: Settings) -> int:
             intraday_by_code if not settings.use_sample_data else {},
             require_capital_cohesion=not settings.use_sample_data and not settings.allow_missing_capital_flow,
         )
+        observation_picks = picks if settings.use_sample_data else build_observation_candidates(
+            picks, quotes, klines_by_code, news_by_code, flows_by_code, intraday_by_code
+        )
         run_date = datetime.now().strftime("%Y-%m-%d")
         storage.save_recommendations(run_date, picks)
         write_report(settings.data_dir / f"recommendations_{run_date}.csv", picks)
-        if settings.paper_trade:
+        if settings.paper_trade and market_data_is_current(klines_by_code, run_date):
             paper_path = run_paper_trading(
                 settings.data_dir,
                 run_date,
@@ -132,8 +188,11 @@ def run_once(settings: Settings) -> int:
                 quotes,
                 settings.paper_capital,
                 klines_by_code,
+                observation_picks,
             )
             print(f"模拟投资日报已保存: {paper_path}")
+        elif settings.paper_trade:
+            print("模拟盘未运行：K线最后交易日不是今天，可能尚未收盘或今天不是交易日。")
         print_report(picks)
         print(f"\n报告已保存: {settings.data_dir / f'recommendations_{run_date}.csv'}")
         print("提示：这是量化和新闻情绪筛选结果，不构成投资建议；买卖前请人工复核公告、财报和风险。")
@@ -147,6 +206,73 @@ def parse_code_item(item: str) -> tuple[str, str]:
         code, name = item.split(":", 1)
         return code.strip(), name.strip()
     return item.strip(), item.strip()
+
+
+def market_data_is_current(klines_by_code: dict[str, list[KLine]], run_date: str) -> bool:
+    latest_dates = [rows[-1].trade_date.isoformat() for rows in klines_by_code.values() if rows]
+    return bool(latest_dates) and max(latest_dates) == run_date
+
+
+def preselect_structure_quotes(
+    quotes: list[StockQuote],
+    flows_by_code: dict[str, CapitalFlow],
+    limit: int,
+) -> list[StockQuote]:
+    """优先保留 A/B 合力股票，并留出少量 C 组观察样本。"""
+    cohesive: list[StockQuote] = []
+    observation: list[StockQuote] = []
+    for quote in quotes:
+        flow = flows_by_code.get(quote.code)
+        if flow is None:
+            continue
+        if (flow.extra_large_net or 0) > 0 and (
+            (flow.large_net or 0) > 0 or (flow.medium_net or 0) > 0
+        ):
+            cohesive.append(quote)
+        else:
+            observation.append(quote)
+
+    def strength(quote: StockQuote) -> tuple[float, float]:
+        flow = flows_by_code[quote.code]
+        combined = (flow.extra_large_net or 0) + max(flow.large_net or 0, flow.medium_net or 0)
+        ratio = combined / max(quote.amount or 0, 1)
+        return ratio, quote.amount or 0
+
+    cohesive.sort(key=strength, reverse=True)
+    observation.sort(key=lambda quote: quote.amount or 0, reverse=True)
+    observation_slots = min(20, max(5, limit // 10))
+    selected = cohesive[: max(0, limit - observation_slots)] + observation[:observation_slots]
+    return selected[:limit]
+
+
+def build_observation_candidates(
+    strict_picks,
+    quotes,
+    klines_by_code,
+    news_by_code,
+    flows_by_code,
+    intraday_by_code,
+):
+    """保留正式合力候选，并加入最多10个无合力观察样本（不用于下单）。"""
+    exploratory = build_recommendations(
+        quotes,
+        klines_by_code,
+        news_by_code,
+        50,
+        flows_by_code,
+        intraday_by_code,
+        require_capital_cohesion=False,
+    )
+    result = list(strict_picks)
+    known = {item.code for item in result}
+    for item in exploratory:
+        if item.code in known or item.capital_cohesion_score >= 58.0:
+            continue
+        result.append(item)
+        known.add(item.code)
+        if sum(1 for row in result if row.capital_cohesion_score < 58.0) >= 10:
+            break
+    return result
 
 
 def fetch_explicit_codes(
@@ -198,19 +324,46 @@ def fetch_explicit_codes(
 
 
 def fetch_market_structure(
-    client: EastMoneyClient, quotes: list[StockQuote]
+    client: EastMoneyClient,
+    quotes: list[StockQuote],
+    allow_individual_fallback: bool = False,
 ) -> tuple[dict[str, CapitalFlow], dict[str, list[IntradayPoint]]]:
     flows: dict[str, CapitalFlow] = {}
     intraday: dict[str, list[IntradayPoint]] = {}
+    individual_attempts = 0
     for index, quote in enumerate(quotes, start=1):
         print(f"[{index}/{len(quotes)}] 资金合力 {quote.code} {quote.name}")
-        flow = client.fetch_capital_flow(quote.code)
+        flow = client.bulk_capital_flows.get(quote.code)
+        if flow is None and allow_individual_fallback:
+            individual_attempts += 1
+            flow = client.fetch_capital_flow(quote.code)
+            if individual_attempts >= 10 and not flows and client.capital_flow_stats["error"] >= 10:
+                print("资金流接口连续10次请求异常，提前终止本轮复核。")
+                break
         if flow is not None:
             flows[quote.code] = flow
-        rows = client.fetch_intraday_trends(quote.code)
-        if rows:
-            intraday[quote.code] = rows
-        time.sleep(0.12)
+        # 分时接口只请求可能进入A/B组的股票，避免对全市场逐只请求并触发限流。
+        if flow is not None and flow.extra_large_net is not None and flow.extra_large_net > 0 and (
+            (flow.large_net or 0.0) > 0 or (flow.medium_net or 0.0) > 0
+        ):
+            rows = client.fetch_intraday_trends(quote.code)
+            if rows:
+                intraday[quote.code] = rows
+            time.sleep(0.12)
+    requests = individual_attempts if allow_individual_fallback else len(quotes)
+    success = len(flows)
+    success_rate = success / requests if requests else 0.0
+    empty = max(0, requests - success)
+    print(
+        "资金流数据质量："
+        f"成功 {success}/{requests} ({success_rate:.1%})，"
+        f"空数据 {empty}。"
+    )
+    repeated_errors = allow_individual_fallback and client.capital_flow_stats["error"] >= 10 and success == 0
+    if (requests >= 20 and success_rate < 0.5) or repeated_errors:
+        raise RuntimeError(
+            "资金流接口成功率低于50%，本次任务停止，避免把数据源异常误判为没有候选。"
+        )
     return flows, intraday
 
 
@@ -332,4 +485,8 @@ def main() -> None:
     )
     if args.daemon:
         raise SystemExit(run_daemon(settings, args.hour, args.minute))
-    raise SystemExit(run_once(settings))
+    try:
+        raise SystemExit(run_once(settings))
+    except RuntimeError as exc:
+        print(f"错误：{exc}")
+        raise SystemExit(1) from None
