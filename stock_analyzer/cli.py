@@ -66,6 +66,9 @@ def run_once(settings: Settings) -> int:
             print("正在拉取 A 股行情...")
             quotes = client.fetch_a_share_quotes()
         storage.save_quotes(quotes)
+        # 完整行情必须一直保留给模拟成交、持仓估值和大盘判断使用。
+        # quotes 后续会缩成资金流预筛名单，只用于选股，不能再传给账户模块。
+        market_quotes = list(quotes)
 
         if not settings.use_sample_data:
             client.fetch_qq_capital_flows([quote.code for quote in quotes])
@@ -185,7 +188,7 @@ def run_once(settings: Settings) -> int:
                 settings.data_dir,
                 run_date,
                 picks,
-                quotes,
+                market_quotes,
                 settings.paper_capital,
                 klines_by_code,
                 observation_picks,

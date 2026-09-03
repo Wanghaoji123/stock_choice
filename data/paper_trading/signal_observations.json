@@ -87,7 +87,13 @@
     "signal_price": 6.49,
     "score": 56.24,
     "capital_cohesion_score": 35.0,
-    "seen_dates": []
+    "seen_dates": [
+      "2026-09-03"
+    ],
+    "t1_close": 6.79,
+    "t1_return_pct": 4.6225,
+    "t1_open": 6.53,
+    "t1_intraday_return_pct": 3.9816
   },
   {
     "signal_date": "2026-08-27",
@@ -107,7 +113,13 @@
     "signal_price": 16.61,
     "score": 85.68,
     "capital_cohesion_score": 90.0,
-    "seen_dates": []
+    "seen_dates": [
+      "2026-09-01"
+    ],
+    "t1_close": 15.95,
+    "t1_return_pct": -3.9735,
+    "t1_open": 17.4,
+    "t1_intraday_return_pct": -8.3333
   },
   {
     "signal_date": "2026-08-28",
@@ -127,6 +139,132 @@
     "signal_price": 19.5,
     "score": 86.88,
     "capital_cohesion_score": 90.0,
+    "seen_dates": []
+  },
+  {
+    "signal_date": "2026-08-31",
+    "code": "000797",
+    "name": "中国武夷",
+    "signal_group": "A",
+    "signal_price": 2.52,
+    "score": 85.68,
+    "capital_cohesion_score": 90.0,
+    "seen_dates": []
+  },
+  {
+    "signal_date": "2026-08-31",
+    "code": "002486",
+    "name": "嘉麟杰",
+    "signal_group": "A",
+    "signal_price": 3.0,
+    "score": 84.6,
+    "capital_cohesion_score": 90.0,
+    "seen_dates": []
+  },
+  {
+    "signal_date": "2026-08-31",
+    "code": "605188",
+    "name": "国光连锁",
+    "signal_group": "A",
+    "signal_price": 13.62,
+    "score": 84.24,
+    "capital_cohesion_score": 90.0,
+    "seen_dates": []
+  },
+  {
+    "signal_date": "2026-09-01",
+    "code": "002688",
+    "name": "金河生物",
+    "signal_group": "A",
+    "signal_price": 5.43,
+    "score": 79.08,
+    "capital_cohesion_score": 90.0,
+    "seen_dates": []
+  },
+  {
+    "signal_date": "2026-09-01",
+    "code": "300094",
+    "name": "国联水产",
+    "signal_group": "A",
+    "signal_price": 3.24,
+    "score": 79.08,
+    "capital_cohesion_score": 90.0,
+    "seen_dates": []
+  },
+  {
+    "signal_date": "2026-09-01",
+    "code": "600865",
+    "name": "百大集团",
+    "signal_group": "A",
+    "signal_price": 9.71,
+    "score": 79.08,
+    "capital_cohesion_score": 90.0,
+    "seen_dates": [
+      "2026-09-03"
+    ],
+    "t1_close": 10.32,
+    "t1_return_pct": 6.2822,
+    "t1_open": 9.38,
+    "t1_intraday_return_pct": 10.0213
+  },
+  {
+    "signal_date": "2026-09-02",
+    "code": "002769",
+    "name": "普路通",
+    "signal_group": "A",
+    "signal_price": 7.87,
+    "score": 79.08,
+    "capital_cohesion_score": 90.0,
+    "seen_dates": []
+  },
+  {
+    "signal_date": "2026-09-02",
+    "code": "002825",
+    "name": "纳尔股份",
+    "signal_group": "A",
+    "signal_price": 9.9,
+    "score": 79.08,
+    "capital_cohesion_score": 90.0,
+    "seen_dates": []
+  },
+  {
+    "signal_date": "2026-09-02",
+    "code": "600477",
+    "name": "杭萧钢构",
+    "signal_group": "A",
+    "signal_price": 2.55,
+    "score": 79.08,
+    "capital_cohesion_score": 90.0,
+    "seen_dates": []
+  },
+  {
+    "signal_date": "2026-09-03",
+    "code": "002798",
+    "name": "帝欧水华",
+    "signal_group": "A",
+    "signal_price": 6.61,
+    "score": 83.02,
+    "capital_cohesion_score": 97.0,
+    "seen_dates": []
+  },
+  {
+    "signal_date": "2026-09-03",
+    "code": "600156",
+    "name": "华升股份",
+    "signal_group": "A",
+    "signal_price": 8.95,
+    "score": 79.05,
+    "capital_cohesion_score": 97.0,
+    "seen_dates": []
+  },
+  {
+    "signal_date": "2026-09-03",
+    "code": "601212",
+    "name": "白银有色",
+    "signal_group": "A",
+    "signal_price": 7.33,
+    "score": 75.02,
+    "capital_cohesion_score": 97.0,
     "seen_dates": []
   }
 ]

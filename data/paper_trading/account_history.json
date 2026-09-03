@@ -154,5 +154,57 @@
     "position_count": 0,
     "strategy_mode": "normal-strong",
     "market_note": "样本平均涨跌幅 +1.88%，下跌占比 24.2%，接近跌停样本 1 只。 判定为强势日。"
+  },
+  {
+    "run_date": "2026-08-31",
+    "cash": 18901.0,
+    "position_value": 0,
+    "total_value": 18901.0,
+    "daily_pnl": 0.0,
+    "daily_pnl_pct": 0.0,
+    "total_pnl": -1099.0,
+    "total_pnl_pct": -5.495,
+    "position_count": 0,
+    "strategy_mode": "normal-strong",
+    "market_note": "样本平均涨跌幅 +2.76%，下跌占比 21.2%，接近跌停样本 0 只。 判定为强势日。"
+  },
+  {
+    "run_date": "2026-09-01",
+    "cash": 18901.0,
+    "position_value": 0,
+    "total_value": 18901.0,
+    "daily_pnl": 0.0,
+    "daily_pnl_pct": 0.0,
+    "total_pnl": -1099.0,
+    "total_pnl_pct": -5.495,
+    "position_count": 0,
+    "strategy_mode": "normal-strong",
+    "market_note": "样本平均涨跌幅 +3.98%，下跌占比 23.3%，接近跌停样本 0 只。 判定为强势日。"
+  },
+  {
+    "run_date": "2026-09-02",
+    "cash": 18901.0,
+    "position_value": 0,
+    "total_value": 18901.0,
+    "daily_pnl": 0.0,
+    "daily_pnl_pct": 0.0,
+    "total_pnl": -1099.0,
+    "total_pnl_pct": -5.495,
+    "position_count": 0,
+    "strategy_mode": "normal-strong",
+    "market_note": "样本平均涨跌幅 +1.92%，下跌占比 34.6%，接近跌停样本 0 只。 判定为强势日。"
+  },
+  {
+    "run_date": "2026-09-03",
+    "cash": 18901.0,
+    "position_value": 0,
+    "total_value": 18901.0,
+    "daily_pnl": 0.0,
+    "daily_pnl_pct": 0.0,
+    "total_pnl": -1099.0,
+    "total_pnl_pct": -5.495,
+    "position_count": 0,
+    "strategy_mode": "normal-strong",
+    "market_note": "样本平均涨跌幅 +1.85%，下跌占比 27.9%，接近跌停样本 0 只。 判定为强势日。"
   }
 ]

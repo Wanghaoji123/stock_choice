@@ -4,21 +4,21 @@
   "positions": {},
   "pending_orders": [
     {
-      "signal_date": "2026-08-28",
-      "code": "603172",
-      "name": "万丰股份",
+      "signal_date": "2026-09-03",
+      "code": "002798",
+      "name": "帝欧水华",
       "budget": 10000.0,
-      "signal_price": 19.5,
-      "score": 86.88,
+      "signal_price": 6.61,
+      "score": 83.02000000000001,
       "signal_group": "A"
     },
     {
-      "signal_date": "2026-08-28",
-      "code": "600217",
-      "name": "中再资环",
+      "signal_date": "2026-09-03",
+      "code": "600156",
+      "name": "华升股份",
       "budget": 10000.0,
-      "signal_price": 3.4,
-      "score": 85.67999999999999,
+      "signal_price": 8.95,
+      "score": 79.05,
       "signal_group": "A"
     }
   ],
