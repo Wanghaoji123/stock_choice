@@ -2,7 +2,23 @@
   "initial_capital": 20000.0,
   "cash": 18901.0,
   "positions": {},
-  "pending_orders": [],
+  "pending_orders": [
+    {
+      "signal_date": "2026-09-04",
+      "code": "605365",
+      "name": "立达信",
+      "budget": 4000.0,
+      "signal_price": 15.84,
+      "score": 89.88,
+      "signal_group": "A+B",
+      "strategy_version": "v3-intraday-confirmation",
+      "buy_low": 15.468204256242812,
+      "buy_high": 15.9984,
+      "confirm": 16.077599999999997,
+      "stop": 15.048,
+      "data_quality_score": 100.0
+    }
+  ],
   "peak_value": 20000.0,
   "trading_halted": false
 }

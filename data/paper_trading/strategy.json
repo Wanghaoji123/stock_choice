@@ -1,10 +1,11 @@
 {
-  "run_date": "2026-09-03",
-  "mode": "normal-strong",
-  "buy_score": 55.0,
-  "max_position_value": 10000.0,
-  "max_positions": 2,
+  "run_date": "2026-09-04",
+  "strategy_version": "v3-intraday-confirmation",
+  "mode": "normal-weak",
+  "buy_score": 58.0,
+  "max_position_value": 4000.0,
+  "max_positions": 1,
   "stop_loss_pct": -5.0,
-  "reason": "近5次记录区间收益 +0.00%，维持默认策略。 强势日只提高确认要求，不放松追高。",
-  "updated_at": "2026-09-03T17:35:21"
+  "reason": "近5次记录区间收益 +0.00%，维持默认策略。 偏弱震荡日保持小仓试仓，避免满仓追单。",
+  "updated_at": "2026-09-04T17:36:04"
 }

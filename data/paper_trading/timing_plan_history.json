@@ -628,5 +628,51 @@
         "plan_type": "candidate"
       }
     ]
+  },
+  {
+    "run_date": "2026-09-04",
+    "strategy_version": "v3-intraday-confirmation",
+    "created_at": "2026-09-04T17:36:04",
+    "plans": [
+      {
+        "code": "605365",
+        "name": "立达信",
+        "decision": "PLAN_BUY",
+        "buy_low": 15.468204256242812,
+        "buy_high": 15.9984,
+        "confirm": 16.077599999999997,
+        "stop": 15.048,
+        "target1": 17.424,
+        "target2": 19.008,
+        "reason": "通过开仓过滤。 近10日平均振幅约 5.2%，低吸区按回撤 2.3% 估算。 均线参考：MA5 15.25，MA10 14.78，MA20 14.34。 近20日区间 13.51-16.25。",
+        "plan_type": "candidate"
+      },
+      {
+        "code": "603161",
+        "name": "科华控股",
+        "decision": "PLAN_BUY",
+        "buy_low": 16.949347316244737,
+        "buy_high": 17.4225,
+        "confirm": 17.50875,
+        "stop": 16.3875,
+        "target1": 18.975,
+        "target2": 20.7,
+        "reason": "通过开仓过滤。 近10日平均振幅约 3.9%，低吸区按回撤 1.7% 估算。 均线参考：MA5 16.32，MA10 16.07，MA20 16.13。 近20日区间 13.99-18.13。",
+        "plan_type": "candidate"
+      },
+      {
+        "code": "000812",
+        "name": "陕西金叶",
+        "decision": "PLAN_BUY",
+        "buy_low": 3.773230061925551,
+        "buy_high": 3.8683,
+        "confirm": 3.88745,
+        "stop": 3.6385,
+        "target1": 4.213,
+        "target2": 4.596,
+        "reason": "通过开仓过滤。 近10日平均振幅约 3.3%，低吸区按回撤 1.5% 估算。 均线参考：MA5 3.79，MA10 3.71，MA20 3.65。 近20日区间 3.44-3.92。",
+        "plan_type": "candidate"
+      }
+    ]
   }
 ]
