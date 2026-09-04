@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import date, datetime
 from pathlib import Path
 from typing import Iterable
 
@@ -127,3 +128,60 @@ class Storage:
             payloads,
         )
         self.conn.commit()
+
+    def load_recent_capital_flows(
+        self, codes: Iterable[str], limit_days: int = 5
+    ) -> dict[str, list[CapitalFlow]]:
+        """读取每只股票最近若干交易日资金流，供持续性评分使用。"""
+        result: dict[str, list[CapitalFlow]] = {}
+        for code in dict.fromkeys(codes):
+            rows = self.conn.execute(
+                """SELECT payload FROM capital_flows WHERE code = ?
+                   ORDER BY trade_date DESC LIMIT ?""",
+                (code, limit_days),
+            ).fetchall()
+            parsed: list[CapitalFlow] = []
+            for (raw,) in rows:
+                try:
+                    item = json.loads(raw)
+                    parsed.append(CapitalFlow(
+                        code=str(item.get("code") or code),
+                        fetched_at=datetime.fromisoformat(str(item["fetched_at"])),
+                        main_net=item.get("main_net"),
+                        small_net=item.get("small_net"),
+                        medium_net=item.get("medium_net"),
+                        large_net=item.get("large_net"),
+                        extra_large_net=item.get("extra_large_net"),
+                    ))
+                except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                    continue
+            result[code] = parsed
+        return result
+
+    def load_recent_klines(self, codes: Iterable[str], limit_days: int = 60) -> dict[str, list[KLine]]:
+        """从本地缓存读取盘中量能确认所需日 K，避免轻量任务再次请求网络。"""
+        result: dict[str, list[KLine]] = {}
+        for code in dict.fromkeys(codes):
+            rows = self.conn.execute(
+                """SELECT payload FROM klines WHERE code = ?
+                   ORDER BY trade_date DESC LIMIT ?""",
+                (code, limit_days),
+            ).fetchall()
+            parsed: list[KLine] = []
+            for (raw,) in reversed(rows):
+                try:
+                    item = json.loads(raw)
+                    parsed.append(KLine(
+                        code=str(item.get("code") or code),
+                        trade_date=date.fromisoformat(str(item["trade_date"])),
+                        open=float(item["open"]), close=float(item["close"]),
+                        high=float(item["high"]), low=float(item["low"]),
+                        volume=float(item.get("volume") or 0.0),
+                        amount=float(item.get("amount") or 0.0),
+                        amplitude=item.get("amplitude"), pct_chg=item.get("pct_chg"),
+                        turnover_rate=item.get("turnover_rate"),
+                    ))
+                except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                    continue
+            result[code] = parsed
+        return result

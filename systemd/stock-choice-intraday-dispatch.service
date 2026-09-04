@@ -1,0 +1,9 @@
+[Unit]
+Description=Dispatch stock_choice intraday check using current clock time
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/wanghaoji/stock_choice
+ExecStart=/usr/bin/bash -c '/home/wanghaoji/stock_choice/scripts/run_intraday.sh "$(date +%%H:%%M)"'

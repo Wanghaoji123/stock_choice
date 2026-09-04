@@ -11,6 +11,29 @@ MIN_CAPITAL_COHESION_SCORE = 58.0
 MAX_ENTRY_DISTRIBUTION_PENALTY = 12.0
 
 
+def _signal_group(flow: CapitalFlow | None) -> str:
+    if flow is None:
+        return "C"
+    xl = (flow.extra_large_net or 0.0) > 0
+    large = (flow.large_net or 0.0) > 0
+    medium = (flow.medium_net or 0.0) > 0
+    if xl and large and medium:
+        return "A+B"
+    if xl and large:
+        return "A_ONLY"
+    if xl and medium:
+        return "B_ONLY"
+    return "C"
+
+
+def _flow_persistence(rows: list[CapitalFlow]) -> int:
+    return sum(
+        1 for row in rows[:5]
+        if (row.extra_large_net or 0.0) > 0
+        and ((row.large_net or 0.0) > 0 or (row.medium_net or 0.0) > 0)
+    )
+
+
 def _safe_mean(values: list[float]) -> float:
     return statistics.fmean(values) if values else 0.0
 
@@ -141,7 +164,10 @@ def _risk_penalty(quote: StockQuote, klines: list[KLine], news: list[NewsItem]) 
             penalty += 12.0
             reasons.append(f"20日高点回撤 {drawdown:.1f}%，风险偏高")
     text = " ".join(f"{item.title} {item.summary}" for item in news[:8])
-    severe_tokens = ("立案", "退市", "处罚", "业绩预亏", "减持", "问询函")
+    severe_tokens = (
+        "立案", "退市", "处罚", "业绩预亏", "减持", "问询函", "监管函",
+        "高比例质押", "强制执行", "债务逾期", "大额解禁", "财务造假", "非标意见",
+    )
     if any(token in text for token in severe_tokens):
         penalty += 18.0
         reasons.append("消息面存在监管、减持或业绩风险关键词")
@@ -250,6 +276,7 @@ def build_recommendations(
     flows_by_code: dict[str, CapitalFlow] | None = None,
     intraday_by_code: dict[str, list[IntradayPoint]] | None = None,
     require_capital_cohesion: bool = False,
+    flow_history_by_code: dict[str, list[CapitalFlow]] | None = None,
 ) -> list[Recommendation]:
     recommendations: list[Recommendation] = []
     for quote in quotes:
@@ -267,11 +294,32 @@ def build_recommendations(
         trend_score, trend_reasons = _trend_score(klines)
         liquidity_score, liquidity_reasons = _liquidity_score(quote, latest)
         risk_penalty, risk_reasons = _risk_penalty(quote, klines, news)
+        risk_flags = tuple(risk_reasons)
+        flow = (flows_by_code or {}).get(quote.code)
         capital_cohesion_score, distribution_penalty, cohesion_reasons = _capital_cohesion_score(
             quote,
-            (flows_by_code or {}).get(quote.code),
+            flow,
             (intraday_by_code or {}).get(quote.code, []),
         )
+        institutional_net = (
+            (flow.extra_large_net or 0.0) + max(flow.large_net or 0.0, flow.medium_net or 0.0)
+        ) if flow else 0.0
+        flow_ratio = institutional_net / max(quote.amount or latest.amount or 0.0, 1.0)
+        history_rows = (flow_history_by_code or {}).get(quote.code, [])
+        persistence = _flow_persistence(history_rows)
+        if persistence >= 4:
+            capital_cohesion_score = min(100.0, capital_cohesion_score + 6.0)
+            cohesion_reasons.append(f"近5个记录日有 {persistence} 日资金合力")
+        elif len(history_rows) >= 3 and persistence <= 1:
+            capital_cohesion_score = max(0.0, capital_cohesion_score - 6.0)
+            cohesion_reasons.append("近期资金合力缺乏持续性")
+        if flow_ratio >= 0.03:
+            capital_cohesion_score = min(100.0, capital_cohesion_score + 5.0)
+        elif flow_ratio <= 0.002 and flow is not None:
+            capital_cohesion_score = max(0.0, capital_cohesion_score - 4.0)
+        quality_parts = [flow is not None, len(klines) >= 60, quote.price is not None,
+                         quote.open_price is not None, quote.amount is not None]
+        data_quality_score = sum(quality_parts) / len(quality_parts) * 100
         if require_capital_cohesion and (
             quote.code not in (flows_by_code or {})
             or capital_cohesion_score < MIN_CAPITAL_COHESION_SCORE
@@ -322,6 +370,11 @@ def build_recommendations(
                 reasons=tuple(reasons[:6]),
                 quote=quote,
                 latest_news=tuple((news_by_code.get(quote.code) or [])[:3]),
+                signal_group=_signal_group(flow),
+                capital_flow_ratio=flow_ratio,
+                capital_flow_persistence=persistence,
+                data_quality_score=data_quality_score,
+                risk_flags=risk_flags,
             )
         )
     # 资金合力已确认时，先按合力强弱排序；综合分仅作为同等合力下的次级排序。

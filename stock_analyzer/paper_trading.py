@@ -25,6 +25,8 @@ MAX_HOLDING_DAYS = 60
 # 这能避免强势但分单不够漂亮的标的被全部挡掉。
 MIN_CAPITAL_COHESION_SCORE = 58.0
 MAX_ENTRY_DISTRIBUTION_PENALTY = 12.0
+STRATEGY_VERSION = "v3-intraday-confirmation"
+MIN_DATA_QUALITY_SCORE = 80.0
 
 
 @dataclass
@@ -131,8 +133,8 @@ def run_paper_trading(
     update_signal_observations(signal_observations_path, run_date, quote_by_code, observation_picks or picks)
     write_signal_summary(signal_summary_path, signal_observations_path)
     actions: list[dict[str, Any]] = []
-    # 昨日收盘后产生的信号，只能在今天开盘后模拟成交。
-    actions.extend(execute_pending_orders(state, quote_by_code, run_date))
+    # 待执行订单由盘中轻量任务处理；收盘任务只取消已经错过全天窗口的旧订单。
+    actions.extend(expire_pending_orders(state, run_date))
     actions.extend(apply_sell_rules(state, pick_by_code, strategy, quote_by_code, run_date))
     update_position_prices(state, quote_by_code, run_date)
     update_account_risk(state)
@@ -145,6 +147,7 @@ def run_paper_trading(
     save_timing_plan(timing_plan_path, run_date, timing_plans)
     append_timing_plan_history(timing_plan_history_path, run_date, timing_plans)
     append_history(history_path, run_date, state, market_note, strategy)
+    earlier_actions = [row for row in load_operations(operations_path) if row.get("run_date") == run_date]
     append_operations(operations_path, run_date, actions, strategy)
     report_path = paper_dir / f"{run_date}.md"
     write_daily_report(
@@ -152,7 +155,7 @@ def run_paper_trading(
         run_date,
         state,
         picks,
-        actions,
+        earlier_actions + actions,
         market_note,
         strategy,
         timing_plans,
@@ -400,6 +403,7 @@ def format_optional_float(value: object) -> str:
 def save_strategy(path: Path, run_date: str, strategy: StrategyProfile) -> None:
     payload = {
         "run_date": run_date,
+        "strategy_version": STRATEGY_VERSION,
         "mode": strategy.mode,
         "buy_score": strategy.buy_score,
         "max_position_value": strategy.max_position_value,
@@ -418,6 +422,7 @@ def append_strategy_history(path: Path, run_date: str, strategy: StrategyProfile
     history.append(
         {
             "run_date": run_date,
+            "strategy_version": STRATEGY_VERSION,
             "mode": strategy.mode,
             "buy_score": strategy.buy_score,
             "max_position_value": strategy.max_position_value,
@@ -448,6 +453,7 @@ def append_timing_plan_history(path: Path, run_date: str, timing_plans: list[dic
     history.append(
         {
             "run_date": run_date,
+            "strategy_version": STRATEGY_VERSION,
             "created_at": datetime.now().isoformat(timespec="seconds"),
             "plans": timing_plans,
         }
@@ -472,6 +478,7 @@ def append_history(
     history.append(
         {
             "run_date": run_date,
+            "strategy_version": STRATEGY_VERSION,
             "cash": round(state.cash, 2),
             "position_value": round(state.position_value, 2),
             "total_value": round(state.total_value, 2),
@@ -500,6 +507,7 @@ def append_operations(
             record = dict(action)
             record["run_date"] = run_date
             record["strategy_mode"] = strategy.mode
+            record["strategy_version"] = STRATEGY_VERSION
             record["created_at"] = datetime.now().isoformat(timespec="seconds")
             fp.write(json.dumps(record, ensure_ascii=False) + "\n")
 
@@ -581,6 +589,9 @@ def execute_pending_orders(
     state: PaperState,
     quote_by_code: dict[str, StockQuote],
     run_date: str,
+    flows_by_code: dict[str, Any] | None = None,
+    klines_by_code: dict[str, list[KLine]] | None = None,
+    session_time: str = "09:35",
 ) -> list[dict[str, Any]]:
     actions: list[dict[str, Any]] = []
     remaining: list[dict[str, Any]] = []
@@ -593,14 +604,47 @@ def execute_pending_orders(
         open_price = quote.open_price if quote else None
         previous_close = quote.previous_close if quote else None
         if not quote or not open_price or open_price <= 0:
-            actions.append({"action": "CANCEL", "code": code, "name": order.get("name", ""), "shares": 0,
-                            "price": None, "amount": 0.0, "reason": "次日缺少有效开盘价，取消过期模拟订单。"})
+            action = "CANCEL" if session_time >= "14:50" else "WAIT"
+            if action == "WAIT":
+                remaining.append(order)
+            actions.append({"action": action, "code": code, "name": order.get("name", ""), "shares": 0,
+                            "price": None, "amount": 0.0,
+                            "reason": "当前行情暂不可用，保留至下一检查点。" if action == "WAIT" else "截至14:50仍缺少有效行情，取消订单。"})
             continue
         if previous_close and open_price >= previous_close * 1.095:
             actions.append({"action": "CANCEL", "code": code, "name": order.get("name", ""), "shares": 0,
                             "price": open_price, "amount": 0.0, "reason": "次日接近涨停开盘，按无法可靠成交处理。"})
             continue
-        fill_price = open_price * (1 + SLIPPAGE_RATE)
+        current_price = quote.price or open_price
+        stop = float(order.get("stop") or float(order.get("signal_price") or current_price) * 0.95)
+        buy_low = float(order.get("buy_low") or float(order.get("signal_price") or current_price) * 0.98)
+        buy_high = float(order.get("buy_high") or float(order.get("signal_price") or current_price) * 1.01)
+        confirm = float(order.get("confirm") or float(order.get("signal_price") or current_price) * 1.015)
+        if current_price <= stop:
+            actions.append({"action": "CANCEL", "code": code, "name": order.get("name", ""), "shares": 0,
+                            "price": current_price, "amount": 0.0, "reason": "盘中价格已跌破计划止损位，取消买入。"})
+            continue
+        flow = (flows_by_code or {}).get(code)
+        flow_confirmed = flow is not None and (flow.extra_large_net or 0.0) > 0 and (
+            (flow.large_net or 0.0) > 0 or (flow.medium_net or 0.0) > 0
+        )
+        pullback_triggered = buy_low <= current_price <= buy_high
+        breakout_triggered = confirm <= current_price <= confirm * 1.025
+        volume_confirmed = _intraday_volume_confirmed(
+            quote, (klines_by_code or {}).get(code, []), session_time
+        )
+        if not flow_confirmed or not (pullback_triggered or (breakout_triggered and volume_confirmed)):
+            if session_time >= "14:50":
+                actions.append({"action": "CANCEL", "code": code, "name": order.get("name", ""), "shares": 0,
+                                "price": current_price, "amount": 0.0,
+                                "reason": "截至14:50仍未同时满足价位、量能和资金确认，订单当日失效。"})
+            else:
+                remaining.append(order)
+                actions.append({"action": "WAIT", "code": code, "name": order.get("name", ""), "shares": 0,
+                                "price": current_price, "amount": 0.0,
+                                "reason": f"{session_time}尚未满足盘中条件，保留至下一检查点。"})
+            continue
+        fill_price = current_price * (1 + SLIPPAGE_RATE)
         budget = min(float(order.get("budget") or 0.0), state.cash)
         shares = int((budget - MIN_COMMISSION) // (fill_price * LOT_SIZE)) * LOT_SIZE
         if shares < LOT_SIZE:
@@ -624,9 +668,66 @@ def execute_pending_orders(
         actions.append({"action": "BUY", "code": code, "name": order.get("name", ""), "shares": shares,
                         "price": fill_price, "amount": amount, "fee": fee,
                         "signal_group": order.get("signal_group", ""),
-                        "reason": "执行上一交易日信号：按次日开盘价并计入滑点和佣金。"})
+                        "reason": f"执行上一交易日信号：{session_time}盘中价位、量能和资金确认通过。"})
     state.pending_orders = remaining
     return actions
+
+
+def _intraday_volume_confirmed(quote: StockQuote, klines: list[KLine], session_time: str) -> bool:
+    if not quote.volume or len(klines) < 20:
+        return False
+    baseline = sum(row.volume for row in klines[-20:]) / 20
+    elapsed = {"09:35": 5, "10:30": 60, "14:50": 230}.get(session_time, 240)
+    expected = baseline * elapsed / 240
+    return quote.volume >= expected * 1.15
+
+
+def expire_pending_orders(state: PaperState, run_date: str) -> list[dict[str, Any]]:
+    actions: list[dict[str, Any]] = []
+    remaining: list[dict[str, Any]] = []
+    for order in state.pending_orders:
+        if str(order.get("signal_date") or "") < run_date:
+            actions.append({"action": "CANCEL", "code": str(order.get("code") or ""),
+                            "name": order.get("name", ""), "shares": 0, "price": None,
+                            "amount": 0.0, "reason": "盘中执行窗口已结束，取消过期模拟订单。"})
+        else:
+            remaining.append(order)
+    state.pending_orders = remaining
+    return actions
+
+
+def execute_pending_session(
+    data_dir: Path,
+    run_date: str,
+    quotes: list[StockQuote],
+    flows_by_code: dict[str, Any],
+    klines_by_code: dict[str, list[KLine]],
+    initial_capital: float,
+    session_time: str,
+) -> tuple[Path, list[dict[str, Any]]]:
+    paper_dir = data_dir / "paper_trading"
+    paper_dir.mkdir(parents=True, exist_ok=True)
+    state_path = paper_dir / "state.json"
+    state = load_state(state_path, initial_capital)
+    actions = execute_pending_orders(
+        state, {q.code: q for q in quotes}, run_date, flows_by_code, klines_by_code, session_time
+    )
+    save_state(state_path, state)
+    operations_path = paper_dir / "operations.jsonl"
+    mode = "intraday-confirmation"
+    with operations_path.open("a", encoding="utf-8") as fp:
+        for action in actions:
+            record = dict(action, run_date=run_date, strategy_mode=mode,
+                          strategy_version=STRATEGY_VERSION,
+                          created_at=datetime.now().isoformat(timespec="seconds"))
+            fp.write(json.dumps(record, ensure_ascii=False) + "\n")
+    report = paper_dir / f"execution_{run_date}_{session_time.replace(':', '')}.md"
+    lines = [f"# 盘中模拟执行 {run_date} {session_time}", ""]
+    lines.extend(f"- {a['action']} {a.get('code', '')} {a.get('name', '')}：{a['reason']}" for a in actions)
+    if not actions:
+        lines.append("- 当前没有需要处理的待执行订单。")
+    report.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return report, actions
 
 
 def update_account_risk(state: PaperState) -> None:
@@ -840,11 +941,16 @@ def create_pending_orders(
             )
             continue
         signal_group = classify_signal_group(pick)
+        plan = build_buy_timing_plan(pick, klines_by_code, strategy)
         state.pending_orders = [item for item in state.pending_orders if item.get("code") != pick.code]
         state.pending_orders.append({
             "signal_date": run_date, "code": pick.code, "name": pick.name,
             "budget": round(budget, 2), "signal_price": pick.price,
             "score": pick.score, "signal_group": signal_group,
+            "strategy_version": STRATEGY_VERSION,
+            "buy_low": plan.get("buy_low"), "buy_high": plan.get("buy_high"),
+            "confirm": plan.get("confirm"), "stop": plan.get("stop"),
+            "data_quality_score": pick.data_quality_score,
         })
         actions.append(
             {
@@ -857,7 +963,7 @@ def create_pending_orders(
                 "signal_group": signal_group,
                 "reason": (
                     f"资金合力 {pick.capital_cohesion_score:.1f} 已确认，"
-                    f"趋势、风险过滤均通过；仅创建订单，下一交易日再模拟成交。"
+                    "趋势、风险过滤均通过；创建订单，下一交易日仅在盘中条件确认后成交。"
                 ),
             }
         )
@@ -930,8 +1036,9 @@ def write_signal_summary(path: Path, observations_path: Path) -> None:
     lines = ["# A/B/C 信号前向统计", "", "只统计信号产生后实际出现的行情，不回填历史资金流。", "",
              "| 分组 | 累计信号 | 完成T+1样本 | 次日上涨率 | T+1日内平均收益 | 信号后T+1平均收益 |",
              "| --- | ---: | ---: | ---: | ---: | ---: |"]
-    for group in ("A", "B", "C"):
-        group_rows = [row for row in rows if row.get("signal_group") == group]
+    for group in ("A+B", "A_ONLY", "B_ONLY", "C"):
+        aliases = {"A_ONLY": {"A_ONLY", "A"}, "B_ONLY": {"B_ONLY", "B"}}.get(group, {group})
+        group_rows = [row for row in rows if row.get("signal_group") in aliases]
         completed = [row for row in group_rows if "t1_return_pct" in row]
         intraday = [float(row["t1_intraday_return_pct"]) for row in completed if "t1_intraday_return_pct" in row]
         signal_returns = [float(row["t1_return_pct"]) for row in completed]
@@ -943,11 +1050,13 @@ def write_signal_summary(path: Path, observations_path: Path) -> None:
             f"| {group} | {len(group_rows)} | {len(completed)} | {win_rate:.1f}% | "
             f"{avg_intraday:+.2f}% | {avg_signal:+.2f}% |"
         )
-    lines.extend(["", "A=超大单+大单；B=超大单+中单；C=无上述合力的观察组，C组不下单。", ""])
+    lines.extend(["", "A+B=三档同时流入；A_ONLY=超大单+大单；B_ONLY=超大单+中单；C=无上述合力，只观察不下单。", ""])
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
 def classify_signal_group(pick: Recommendation) -> str:
+    if pick.signal_group:
+        return pick.signal_group
     reasons = " ".join(pick.reasons)
     if "超大单、大单、中单同步" in reasons or "超大单与大单" in reasons:
         return "A"
@@ -961,6 +1070,8 @@ def buy_filter_reason(
     strategy: StrategyProfile,
     klines: list[KLine] | None = None,
 ) -> tuple[bool, str]:
+    if pick.data_quality_score and pick.data_quality_score < MIN_DATA_QUALITY_SCORE:
+        return False, f"数据质量 {pick.data_quality_score:.0f} 低于开仓要求 {MIN_DATA_QUALITY_SCORE:.0f}。"
     if pick.distribution_penalty > MAX_ENTRY_DISTRIBUTION_PENALTY:
         return False, (
             f"检测到派发结构，惩罚 {pick.distribution_penalty:.1f}："

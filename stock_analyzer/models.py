@@ -88,6 +88,11 @@ class Recommendation:
     reasons: tuple[str, ...]
     quote: StockQuote
     latest_news: tuple[NewsItem, ...]
+    signal_group: str = "C"
+    capital_flow_ratio: float = 0.0
+    capital_flow_persistence: int = 0
+    data_quality_score: float = 0.0
+    risk_flags: tuple[str, ...] = ()
 
     def as_row(self) -> dict[str, Any]:
         return {
@@ -104,5 +109,10 @@ class Recommendation:
             "capital_cohesion_score": round(self.capital_cohesion_score, 2),
             "distribution_penalty": round(self.distribution_penalty, 2),
             "risk_penalty": round(self.risk_penalty, 2),
+            "signal_group": self.signal_group,
+            "capital_flow_ratio": round(self.capital_flow_ratio, 6),
+            "capital_flow_persistence": self.capital_flow_persistence,
+            "data_quality_score": round(self.data_quality_score, 2),
+            "risk_flags": "；".join(self.risk_flags),
             "reasons": "；".join(self.reasons),
         }

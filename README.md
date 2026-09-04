@@ -96,7 +96,8 @@ python3 main.py --once --full-scan --news-candidates 120 --news-per-stock 5 --pa
 运行逻辑：
 
 - 当天 17:30 运行后，系统根据当天收盘数据生成“下一交易日模拟计划”。
-- 第二个交易日 17:30 再运行时，系统会先用新的收盘价更新持仓收益，验证上一轮计划，再生成新的计划。
+- 下一交易日 09:35、10:30、14:50 由轻量任务只检查待执行股票；价位、量能和当日资金方向同时确认后才模拟成交。
+- 14:50 仍未满足条件的订单当日失效；17:30 收盘任务更新持仓收益并生成新计划，不再事后按开盘价补记买入。
 - 每次运行都会保存账户历史、操作流水和当前策略参数，后续筛选会读取这些记录调整模拟盘风险模式。
 
 纸面模拟规则（2026-08 起采用可成交口径）：
@@ -107,7 +108,10 @@ python3 main.py --once --full-scan --news-candidates 120 --news-per-stock 5 --pa
 - 最终只推荐资金合力最强的 3 只；先按资金合力排序，但综合分仍必须达到当前策略开仓线。
 - 开仓以资金合力为前提，再检查上涨趋势与 20 日压力位；当前口径已从“只认非常强的资金合力”放宽到“中等偏强合力即可进入观察”，避免天天筛到空仓，但明显派发结构仍会被剔除。
 - 策略允许靠近 20 日线试仓，但近 5 日急涨且逼近压力位时仍等待突破确认或回踩。
-- T 日收盘后只创建信号订单，T+1 按开盘价并计入 0.05% 滑点模拟成交，不再使用事后已知的 T 日收盘价成交。
+- T 日收盘后只创建信号订单，不使用事后已知的 T 日收盘价成交，也不再于次日收盘后倒推开盘成交。
+- 当前策略版本为 `v3-intraday-confirmation`：T+1 仅在进入低吸区，或放量突破确认价且资金合力未转弱时成交，成交价使用检查时实时价并计入滑点。
+- 资金分组结构化保存为 `A+B`、`A_ONLY`、`B_ONLY`、`C`，并读取 SQLite 最近 5 个记录日衡量合力持续性。
+- 最终候选增加数据质量门控；关键行情、资金流或 K 线缺失时不创建正式订单。
 - 模拟费用包含万三佣金（最低 5 元）和卖出万五印花税；这些是可调整的建模参数，不代表券商实际收费。
 - 个股触发 -5% 止损、+20% 止盈；浮盈达到 10% 后把保护线提高到成本附近；最长持有 60 个交易日。
 - 账户从历史峰值回撤达到 10% 后，新单不超过 5000 元；达到 15% 后锁定新开仓，需人工复盘后解除。
@@ -174,19 +178,21 @@ python3 main.py --once --full-scan --news-candidates 120 --news-per-stock 5 --pa
 ```bash
 mkdir -p ~/.config/systemd/user
 cp systemd/stock-choice.service systemd/stock-choice.timer ~/.config/systemd/user/
+cp systemd/stock-choice-intraday-dispatch.service systemd/stock-choice-intraday.timer ~/.config/systemd/user/
 systemctl --user daemon-reload
-systemctl --user enable --now stock-choice.timer
-systemctl --user list-timers stock-choice.timer
+systemctl --user enable --now stock-choice.timer stock-choice-intraday.timer
+systemctl --user list-timers stock-choice.timer stock-choice-intraday.timer
 ```
 
-任务在工作日 17:30 运行 `scripts/run_daily.sh`。日志保存在 `data/logs/`，失败记录保存在 `data/alerts/`；图形桌面可用时还会调用 `notify-send`。节假日或行情尚未更新时不会生成虚假的模拟交易记录。
+收盘任务在工作日 17:30 运行 `scripts/run_daily.sh`；盘中任务在 09:35、10:30、14:50 运行 `scripts/run_intraday.sh`。日志保存在 `data/logs/`，失败记录保存在 `data/alerts/`；图形桌面可用时还会调用 `notify-send`。节假日或行情日期不是当天时不会生成虚假的模拟成交。
 
 模板目前写入了本机项目绝对路径 `/home/wanghaoji/stock_choice`；项目移动后需同步修改 service 和脚本。系统只按工作日调度，不自带完整交易所日历，因此是否交易日最终以当日 K 线日期校验为准。
 
 ## 信号实验
 
-- A 组：超大单与大单同向净流入。
-- B 组：超大单与中单同向净流入。
+- A+B 组：超大单、大单和中单同时净流入。
+- A_ONLY 组：超大单与大单净流入，中单未同时确认。
+- B_ONLY 组：超大单与中单净流入，大单未同时确认。
 - C 组：没有上述资金合力，但综合趋势等条件靠前；只观察，不下单。
 
 正式模拟订单仍只来自严格资金合力候选。三组从现在开始做前向统计，不会用当前结果伪造过去的资金流历史。样本不足 100 个信号前，不建议据此自动修改核心权重。

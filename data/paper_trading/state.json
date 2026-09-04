@@ -2,26 +2,7 @@
   "initial_capital": 20000.0,
   "cash": 18901.0,
   "positions": {},
-  "pending_orders": [
-    {
-      "signal_date": "2026-09-03",
-      "code": "002798",
-      "name": "帝欧水华",
-      "budget": 10000.0,
-      "signal_price": 6.61,
-      "score": 83.02000000000001,
-      "signal_group": "A"
-    },
-    {
-      "signal_date": "2026-09-03",
-      "code": "600156",
-      "name": "华升股份",
-      "budget": 10000.0,
-      "signal_price": 8.95,
-      "score": 79.05,
-      "signal_group": "A"
-    }
-  ],
+  "pending_orders": [],
   "peak_value": 20000.0,
   "trading_halted": false
 }

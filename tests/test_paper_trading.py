@@ -5,7 +5,9 @@ import unittest
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from stock_analyzer.models import Recommendation, StockQuote
+from stock_analyzer.models import CapitalFlow, Recommendation, StockQuote
+from stock_analyzer.analyzer import build_recommendations
+from stock_analyzer.sample_data import sample_klines
 from stock_analyzer.config import Settings
 from stock_analyzer.fetchers import EastMoneyClient
 from stock_analyzer.paper_trading import (
@@ -43,11 +45,31 @@ def pick(score: float = 70.0) -> Recommendation:
     )
 
 
+def flow(code: str = "600000") -> CapitalFlow:
+    return CapitalFlow(
+        code=code, fetched_at=datetime.now(), main_net=300_000,
+        small_net=-100_000, medium_net=50_000, large_net=100_000,
+        extra_large_net=200_000,
+    )
+
+
 STRATEGY = StrategyProfile("normal", 65, 10_000, 2, -5, "test")
 MARKET = MarketProfile("normal", 0.5, 0, 1, 2, "test")
 
 
 class PaperTradingTests(unittest.TestCase):
+    def test_structured_group_and_flow_persistence_are_recorded(self) -> None:
+        q = quote()
+        rows = sample_klines(q.code, q.price or 10.0)
+        f = flow()
+        result = build_recommendations(
+            [q], {q.code: rows}, {}, 1, {q.code: f}, {}, True,
+            {q.code: [f, f, f, f, f]},
+        )
+        self.assertEqual(result[0].signal_group, "A+B")
+        self.assertEqual(result[0].capital_flow_persistence, 5)
+        self.assertGreaterEqual(result[0].data_quality_score, 80)
+
     def test_quote_batch_fields_populate_capital_flow(self) -> None:
         client = EastMoneyClient(Settings())
         item = {
@@ -93,11 +115,31 @@ class PaperTradingTests(unittest.TestCase):
         actions = create_pending_orders(state, [pick()], STRATEGY, MARKET, {}, "2026-08-27")
         self.assertEqual(actions[0]["action"], "ORDER")
         self.assertFalse(state.positions)
-        fills = execute_pending_orders(state, {"600000": quote()}, "2026-08-28")
+        fills = execute_pending_orders(
+            state, {"600000": quote()}, "2026-08-28", {"600000": flow()}
+        )
         self.assertEqual(fills[0]["action"], "BUY")
         self.assertIn("600000", state.positions)
         amount_at_fill = state.positions["600000"].shares * fills[0]["price"]
         self.assertLess(state.cash + amount_at_fill, 20_000)
+
+    def test_pending_order_waits_when_intraday_confirmation_is_missing(self) -> None:
+        state = PaperState(20_000, 20_000, {}, [], 20_000)
+        create_pending_orders(state, [pick()], STRATEGY, MARKET, {}, "2026-08-27")
+        actions = execute_pending_orders(
+            state, {"600000": quote(price=11.0)}, "2026-08-28", {}, session_time="10:30"
+        )
+        self.assertEqual(actions[0]["action"], "WAIT")
+        self.assertEqual(len(state.pending_orders), 1)
+
+    def test_pending_order_expires_at_last_checkpoint(self) -> None:
+        state = PaperState(20_000, 20_000, {}, [], 20_000)
+        create_pending_orders(state, [pick()], STRATEGY, MARKET, {}, "2026-08-27")
+        actions = execute_pending_orders(
+            state, {"600000": quote(price=11.0)}, "2026-08-28", {}, session_time="14:50"
+        )
+        self.assertEqual(actions[0]["action"], "CANCEL")
+        self.assertFalse(state.pending_orders)
 
     def test_five_percent_stop_uses_intraday_low(self) -> None:
         position = Position("600000", "测试", 500, 10.0, 9.8, "2026-08-20", 10.2, 3)

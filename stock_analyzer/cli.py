@@ -10,7 +10,7 @@ from .analyzer import build_recommendations
 from .config import Settings
 from .fetchers import EastMoneyClient
 from .models import CapitalFlow, IntradayPoint, KLine, NewsItem, StockQuote
-from .paper_trading import generate_monthly_summary, run_paper_trading
+from .paper_trading import execute_pending_session, generate_monthly_summary, load_state, run_paper_trading
 from .sample_data import sample_klines, sample_news, sample_quotes
 from .storage import Storage
 
@@ -19,6 +19,7 @@ def run_once(settings: Settings) -> int:
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     client = EastMoneyClient(settings)
     storage = Storage(settings.db_path)
+    flow_history_by_code: dict[str, list[CapitalFlow]] = {}
     try:
         if settings.codes:
             quotes, klines_by_code, news_by_code = fetch_explicit_codes(client, storage, settings)
@@ -26,6 +27,7 @@ def run_once(settings: Settings) -> int:
                 client, quotes, allow_individual_fallback=True
             )
             storage.save_capital_flows(datetime.now().strftime("%Y-%m-%d"), flows_by_code.values())
+            flow_history_by_code = storage.load_recent_capital_flows(flows_by_code.keys())
             picks = build_recommendations(
                 quotes,
                 klines_by_code,
@@ -34,6 +36,7 @@ def run_once(settings: Settings) -> int:
                 flows_by_code,
                 intraday_by_code,
                 require_capital_cohesion=not settings.allow_missing_capital_flow,
+                flow_history_by_code=flow_history_by_code,
             )
             observation_picks = build_observation_candidates(
                 picks, quotes, klines_by_code, news_by_code, flows_by_code, intraday_by_code
@@ -144,6 +147,7 @@ def run_once(settings: Settings) -> int:
             storage.save_capital_flows(
                 datetime.now().strftime("%Y-%m-%d"), client.bulk_capital_flows.values()
             )
+            flow_history_by_code = storage.load_recent_capital_flows(client.bulk_capital_flows.keys())
             preliminary = build_recommendations(
                 structure_quotes,
                 klines_by_code,
@@ -152,6 +156,7 @@ def run_once(settings: Settings) -> int:
                 flows_by_code,
                 intraday_by_code,
                 require_capital_cohesion=not settings.allow_missing_capital_flow,
+                flow_history_by_code=flow_history_by_code,
             )
             for idx, item in enumerate(preliminary, start=1):
                 quote = quote_by_code[item.code]
@@ -176,6 +181,7 @@ def run_once(settings: Settings) -> int:
             flows_by_code if not settings.use_sample_data else {},
             intraday_by_code if not settings.use_sample_data else {},
             require_capital_cohesion=not settings.use_sample_data and not settings.allow_missing_capital_flow,
+            flow_history_by_code=flow_history_by_code,
         )
         observation_picks = picks if settings.use_sample_data else build_observation_candidates(
             picks, quotes, klines_by_code, news_by_code, flows_by_code, intraday_by_code
@@ -202,6 +208,46 @@ def run_once(settings: Settings) -> int:
         return 0
     finally:
         storage.close()
+
+
+def run_intraday_execution(settings: Settings, session_time: str) -> int:
+    state = load_state(settings.data_dir / "paper_trading" / "state.json", settings.paper_capital)
+    pending = [row for row in state.pending_orders if str(row.get("signal_date") or "") < datetime.now().strftime("%Y-%m-%d")]
+    if not pending:
+        print("当前没有上一交易日待执行订单。")
+        return 0
+    client = EastMoneyClient(settings)
+    quotes: list[StockQuote] = []
+    codes = [str(row.get("code") or "") for row in pending if row.get("code")]
+    names = {str(row.get("code")): str(row.get("name") or row.get("code")) for row in pending}
+    storage = Storage(settings.db_path)
+    try:
+        klines_by_code = storage.load_recent_klines(codes)
+    finally:
+        storage.close()
+    for code in codes:
+        try:
+            quote = client.fetch_quote(code, names[code])
+            if quote and quote.fetched_at.date().isoformat() == datetime.now().strftime("%Y-%m-%d"):
+                quotes.append(quote)
+        except RuntimeError as exc:
+            print(f"{code} 盘中行情暂不可用：{exc}")
+    try:
+        flows = client.fetch_qq_capital_flows(codes)
+    except RuntimeError as exc:
+        print(f"盘中资金流暂不可用：{exc}")
+        flows = {}
+    if not quotes:
+        print("没有取得日期为今天的实时行情，可能休市或数据源尚未更新；保留全部订单。")
+        return 0
+    report, actions = execute_pending_session(
+        settings.data_dir, datetime.now().strftime("%Y-%m-%d"), quotes, flows,
+        klines_by_code, settings.paper_capital, session_time,
+    )
+    for action in actions:
+        print(f"{action['action']} {action.get('code', '')}：{action['reason']}")
+    print(f"盘中执行报告已保存: {report}")
+    return 0
 
 
 def parse_code_item(item: str) -> tuple[str, str]:
@@ -388,6 +434,11 @@ def write_report(path: Path, picks) -> None:
                 "capital_cohesion_score",
                 "distribution_penalty",
                 "risk_penalty",
+                "signal_group",
+                "capital_flow_ratio",
+                "capital_flow_persistence",
+                "data_quality_score",
+                "risk_flags",
                 "reasons",
             ],
         )
@@ -451,6 +502,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--paper-trade", action="store_true", help="启用2万元本金的纸面模拟投资日志")
     parser.add_argument("--paper-capital", type=float, default=20_000.0, help="纸面模拟初始本金，默认20000")
     parser.add_argument("--paper-summary", action="store_true", help="生成纸面模拟月度复盘")
+    parser.add_argument("--paper-execute-pending", action="store_true", help="仅检查并执行上一交易日待执行订单")
+    parser.add_argument("--session-time", choices=("09:35", "10:30", "14:50"), default="09:35",
+                        help="盘中检查点，用于价量条件和订单失效判断")
     parser.add_argument("--month", default="", help="月度复盘月份，格式 YYYY-MM；默认当前月份")
     parser.add_argument(
         "--codes",
@@ -462,6 +516,13 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    if args.paper_execute_pending:
+        settings = Settings(paper_capital=args.paper_capital)
+        try:
+            raise SystemExit(run_intraday_execution(settings, args.session_time))
+        except RuntimeError as exc:
+            print(f"错误：{exc}")
+            raise SystemExit(1) from None
     if args.paper_summary:
         month = args.month or datetime.now().strftime("%Y-%m")
         summary_path = generate_monthly_summary(Settings().data_dir, month)

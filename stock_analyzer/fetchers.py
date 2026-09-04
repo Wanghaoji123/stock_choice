@@ -284,6 +284,12 @@ class EastMoneyClient:
             pct_chg = (current_price - previous_close) / previous_close * 100
         volume = _to_float(parts[8])
         amount = _to_float(parts[9])
+        source_time = datetime.now()
+        if len(parts) > 31:
+            try:
+                source_time = datetime.strptime(f"{parts[30]} {parts[31]}", "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                pass
         return StockQuote(
             code=code,
             name=name or parts[0] or code,
@@ -294,7 +300,7 @@ class EastMoneyClient:
             amount=amount,
             turnover_rate=None,
             market_cap=None,
-            fetched_at=datetime.now(),
+            fetched_at=source_time,
             open_price=_to_float(parts[1]),
             high_price=_to_float(parts[4]),
             low_price=_to_float(parts[5]),
